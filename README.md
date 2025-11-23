@@ -1,82 +1,232 @@
-# AI Distributed Systems Assistant
+AI Distributed Systems Assistant
 
-Local-first GraphRAG and multi-agent system for analyzing distributed infrastructure, logs, and metrics.  
-Built with Neo4j, MariaDB vectors, Loki, Prometheus, Grafana, and open-source LLMs.
+Local-first GraphRAG + multi-agent system for analyzing distributed infrastructure, logs, metrics, and cluster topology.
+Ingests real observability data (Loki, Prometheus), builds a unified knowledge graph (Neo4j + MariaDB vectors), and uses local LLMs to explain incidents and cluster behavior.
 
-## What is this?
+Why this exists
 
-This project is an AI assistant for distributed systems:
+Modern distributed systems generate too much data across too many surfaces — logs, metrics, events, topologies, runbooks, configs.
+Most teams piece this together manually.
 
-- Ingests **topology** (services, nodes, pods)
-- Ingests **logs** (via Loki) and **metrics** (via Prometheus)
-- Stores long-term knowledge in **MariaDB (with vector)** and **Neo4j**
-- Uses **GraphRAG** + multi-agent workflows to:
-  - Explain incidents and cluster behavior
-  - Correlate logs, metrics, and topology
-  - Suggest remediation steps and runbooks
+This project builds an AI-native observability layer:
 
-Everything is designed to run **locally** on your own hardware.
+Understand your cluster topology
 
-## Tech stack
+Correlate logs → metrics → services → incidents
 
-- **API / Orchestration**
-  - Python 3.12, FastAPI
+Store structured knowledge in a graph
 
-- **Storage & Retrieval**
-  - MariaDB 11+ with vector columns (chunks, embeddings, incidents)
-  - Neo4j Community (graph model of services, nodes, incidents, runbooks)
+Retrieve context using GraphRAG
 
-- **Observability**
-  - Prometheus (metrics scraping)
-  - Loki (log aggregation)
-  - Grafana (dashboards)
+Use local LLMs to explain what’s happening
 
-- **Models (planned)**
-  - Embeddings: Nemotron (or compatible OSS embedding model)
-  - Reasoning / retrieval: Nemotron instruct (or similar)
-  - Optional reranker: small reranker model or LLM-based scoring
+Suggest runbooks or next actions
 
-## High-level architecture
+All locally, without sending your data to any cloud LLM.
 
-- **Ingestion layer**
-  - Topology Agent: syncs cluster / service graph into Neo4j
-  - Log Agent: pulls logs from Loki, creates `Incident` + `LogSnippet` nodes
-  - Metrics Agent (planned): pulls metrics from Prometheus, attaches `MetricSnapshot` nodes
+High-level architecture
+       +----------------------+
+       |    User Query        |
+       +----------+-----------+
+                  |
+                  v
+       +----------+-----------+
+       |      Planner Agent   |
+       +----+---------+-------+
+            |         |
+   +--------+         +---------+
+   |                            |
+   v                            v
++--+----------------+    +------+-----------------+
+|    Log Agent      |    |  Topology Agent        |
+|  (Loki ingestion) |    | (services/nodes/pods)  |
++--------+----------+    +-----------+------------+
+         |                           |
+         v                           v
++--------+----------------------------+----------+
+|              Knowledge Graph (Neo4j)          |
++-------------------+---------------------------+
+                    |
+       +------------+-------------+
+       |     Vector Store         |
+       |   (MariaDB w/ vectors)   |
+       +------------+-------------+
+                    |
+                    v
+           +--------+--------+
+           |  Explainer Agent |
+           +--------+---------+
+                    |
+                    v
+           Natural language answer
 
-- **Knowledge layer**
-  - MariaDB: vector store for text chunks, log snippets, doc sections
-  - Neo4j: graph of `Service`, `Node`, `Incident`, `Runbook`, etc.
-  - GraphRAG: hybrid retrieval over graph + vectors
+Key capabilities
+1. Log & event ingestion
 
-- **Agents**
-  - Planner: routes queries to other agents
-  - Explainer Agent: uses GraphRAG to explain incidents / behavior
-  - Runbook Agent: connects incidents with relevant documentation / actions
+Pulls log streams from Loki
 
-- **Interface**
-  - FastAPI service exposing HTTP endpoints (CLI / UI integrations later)
+Extracts incidents, anomalies, patterns
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for more detail.
+Creates Incident, LogSnippet graph nodes
 
-## Status
+2. Metrics ingestion
 
-> 🚧 Early scaffolding. Not ready for production.
+Pulls cluster + service metrics from Prometheus
 
-Planned milestones:
+Attaches MetricSnapshot nodes to incidents
 
-1. Initial project structure and containers (this PR)
-2. Basic Neo4j schema + seed data
-3. Loki + Prometheus + Grafana wired and reachable
-4. First GraphRAG query over sample topology + incidents
-5. Log Agent + Explainer Agent minimal loop
+3. Topology ingestion
 
-## Getting started (dev)
+Automatically maps:
 
-Requirements:
-- Docker + docker-compose
-- (Optional) Python 3.12 for local backend dev
+Services
 
-Run the stack:
+Pods
 
-```bash
+Nodes
+
+Deployments
+to graph relationships that GraphRAG can reason over.
+
+4. Knowledge graph
+
+Neo4j ties together:
+
+incidents
+
+services
+
+nodes
+
+metrics
+
+logs
+
+runbooks
+
+Agents use this as a shared world model — no private memory silos.
+
+5. Semantic search + graph reasoning
+
+MariaDB vector search + Neo4j graph expansion enables:
+
+retrieving relevant incidents
+
+similar logs
+
+matching runbooks
+
+identifying patterns across services
+
+6. Local LLM integration
+
+You control the models.
+Suggested triple-model design:
+
+Embedding model (Nemotron embedding or similar)
+
+Reasoning model (Nemotron instruct or similar)
+
+Optional reranker (small cross-encoder or LLM-based scoring)
+
+Current stack
+
+Backend: FastAPI
+Knowledge graph: Neo4j Community
+Vector DB: MariaDB 11+ (vector indexes enabled)
+Logs: Loki
+Metrics: Prometheus
+Dashboards: Grafana
+Models: Any local LLM (e.g., Nemotron, Llama, Phi, Gemma, etc.)
+Orchestration: Hand-rolled agent graph (LangGraph-style)
+
+Roadmap
+0. Initial scaffolding ✔ current
+
+Repo structure
+
+Architecture docs
+
+Docker compose stack
+
+FastAPI skeleton
+
+Neo4j schema
+
+1. Minimal ingestion pipeline
+
+Basic Loki ingestion
+
+Basic Prometheus scrape
+
+Build sample topology + seed incidents
+
+2. GraphRAG engine
+
+Hybrid retrieval over Neo4j + MariaDB vectors
+
+Query rewriting and neighborhood expansion
+
+3. Agents
+
+Planner Agent
+
+Log Agent
+
+Topology Agent
+
+Explainer Agent
+
+Runbook Agent
+
+4. Cluster explanation v1
+
+Explain service health
+
+Summaries for incidents
+
+“Why is this node unstable?”
+
+5. Real-time mode
+
+Periodic ingestion
+
+Streaming updates
+
+Incident correlation
+
+6. UI
+
+Optional: small web dashboard or CLI
+
+Getting started
+Prereqs
+
+Docker & Docker Compose
+
+Python 3.12 (optional for local dev)
+
+Bring up the stack
 docker-compose -f infra/docker-compose.yml up --build
+
+Test the API
+curl http://localhost:8000/health
+
+Contributing
+
+This is an early, active project — contributions are welcome.
+Planned areas:
+
+retrieval optimization
+
+agent design
+
+graph schemas
+
+log/metrics ingestion adapters
+
+LLM model adapters
+
+UI
+
+devops & deployment
