@@ -1,238 +1,564 @@
-AI Distributed Systems Assistant
+DevMesh AI Platform – Phase 1 PRD
 
-Local-first GraphRAG + multi-agent system for analyzing distributed infrastructure, logs, metrics, and cluster topology.
-Ingests real observability data (Loki, Prometheus), builds a unified knowledge graph (Neo4j + MariaDB vectors), and uses local LLMs to explain incidents and cluster behavior.
+Title: Eager Assistant Platform Foundation (Phase 1)
+Author: Pete / DevMesh
+Version: 1.0
+Status: Draft for build
 
-Why this exists
+1. Purpose
 
-Modern distributed systems generate too much data across too many surfaces — logs, metrics, events, topologies, runbooks, configs.
-Most teams piece this together manually.
+Build the foundational components of the DevMesh AI agent ecosystem in a way that is:
 
-This project builds an AI-native observability layer:
+contract-driven
 
-Understand your cluster topology
+modular
 
-Correlate logs → metrics → services → incidents
+replaceable at every layer
 
-Store structured knowledge in a graph
+secure-by-design
 
-Retrieve context using GraphRAG
+aligned with industry best practices (SOLID, DRY, YAGNI, KISS/LOS)
 
-Use local LLMs to explain what’s happening
+scalable
 
-Suggest runbooks or next actions
+compatible with Claude Code, CrewAI, local inference, and remote inference
 
-All locally, without sending your data to any cloud LLM.
+This phase focuses on:
+
+establishing a clean MCP
+
+building the ingestion → semantic extraction → RAG → KG → retrieval pipeline
+
+defining the agent framework (CrewAI)
+
+creating an initial operator UI
+
+setting the blueprint for iterative agent addition
+
+This PRD defines the contract for all future components.
+
+2. Problem Statement
+
+Current prototype:
+
+mixes logic with orchestration
+
+has MCP wrapped around manual steps
+
+lacks formal contracts
+
+has inconsistent ingestion logic
+
+has no semantic extraction tuning loop
+
+has no unified RAG/KG subsystem
+
+uses terminal-only interfaces
+
+cannot run autonomous cycles (outreach, research, ingestion, anomaly detection, etc.)
+
+lacks modular agents with clear boundaries
+
+This causes:
+
+high coupling
+
+low replaceability
+
+difficulty in testing
+
+fragile workflows
+
+inability to scale or expand cleanly
+
+Phase 1 must establish the foundation so future agents are plug-and-play.
+
+3. Goals & Non-Goals
+3.1 Goals
+
+Define and implement a clean MCP server
+
+all tools expose strict JSON input/output schemas
+
+no business logic inside the MCP server
+
+MCP = contracts + pure operations
+
+Build the unified ingestion pipeline
+
+document detection
+
+LLM-assisted extraction
+
+markdown normalization
+
+chunking
+
+semantic metadata extraction treated as a model with tuning
+
+Implement RAG subsystem with proper semantic extraction tuning
+
+iterative improvement
+
+eval sets
+
+observability logs
+
+stateless retrieval API
+
+Build version-1 Knowledge Graph schema
+
+entities, relations, provenance
+
+stored in MariaDB with vector engine
+
+fully replaceable
+
+Build the retrieval service
+
+KG → vector search → context assembly
+
+unified interface
+
+exposed as a tool to agents
+
+Implement CrewAI foundational agent roles
+
+Planner
+
+Research agent
+
+Extractor agent
+
+Reviewer agent
+
+Create a simple operator console UI (Streamlit/OpenWebUI)
+
+model selection
+
+MCP tool tester
+
+retrieval viewer
+
+ingestion logs
+
+KG visualization (basic)
+
+Establish logging, traceability, and evaluation
+
+model evals
+
+extraction evals
+
+retrieval evals
+
+full observability
+
+Ship a working end-to-end pipeline
+
+operator uploads file
+
+ingestion
+
+extraction
+
+chunking
+
+RAG
+
+KG update
+
+retrieval
+
+agentical workflow execution
+
+3.2 Non-Goals
+
+Building a production UI
+
+Building 10+ agents
+
+Full automation (campaign loops, anomaly loops, etc.)
+
+Multi-node scheduling
+
+LLM fine-tuning
+
+Optimization for speed or cost
+
+Workforce integrations
+
+Phase 1 = foundation, not empire.
+
+4. Users / Personas
+Primary User: Operator (You)
+
+Needs:
+
+upload data
+
+test ingestion
+
+test retrieval
+
+examine KG entities
+
+run agents
+
+debug pipelines
+
+inspect logs
+
+Secondary User: Developer (Also you)
+
+Needs:
+
+clean modular code
+
+well-documented contracts
+
+testable tools
+
+easy swap of models/engines
+
+reproducible workflows
+
+5. High-Level Architecture
+5.1 Core Pillars
+                 ┌──────────────────────────┐
+                 │      Operator UI         │
+                 └─────────────┬────────────┘
+                               │
+                     (CrewAI orchestrator)
+                               │
+                   ┌───────────▼───────────┐
+                   │         MCP            │
+                   │ (contract layer only)  │
+                   └─┬──────────┬──────────┘
+     ingestion.tools │          │ retrieval.tools
+                     │          │
+             ┌───────▼──────┐   ▼──────────────┐
+             │ Ingestion     │                  │
+             │ Pipeline      │  Retrieval API   │
+             └───┬──────┬───┘                  │
+                 │      │                      │
+        semantic │     RAG                     │
+      extraction │     KG lookup               │
+                 │      │                      │
+                 ▼      ▼                      ▼
+            ┌────────────────────────────────────────┐
+            │         MariaDB + Vector Engine        │
+            │   (Documents, Chunks, Entities, KG)    │
+            └────────────────────────────────────────┘
 
 
-## High-level architecture
+Every interaction is governed by contracts, not ad-hoc calls.
 
-```
-       +----------------------+
-       |      User Query      |
-       +----------+-----------+
-                  |
-                  v
-       +----------+-----------+
-       |       Planner Agent  |
-       +----+---------+-------+
-            |         |
-   +--------+         +---------+
-   |                            |
-   v                            v
-+--+----------------+    +------+-----------------+
-|     Log Agent     |    |    Topology Agent      |
-|  (Loki ingestion) |    | (services/nodes/pods)  |
-+--------+----------+    +-----------+------------+
-         |                           |
-         v                           v
-+--------+----------------------------+----------+
-|              Knowledge Graph (Neo4j)           |
-|   Services • Nodes • Incidents • Runbooks     |
-+-------------------+---------------------------+
-                    |
-       +------------+-------------+
-       |      Vector Store        |
-       |   (MariaDB w/ vectors)   |
-       +------------+-------------+
-                    |
-                    v
-           +--------+--------+
-           |  Explainer Agent |
-           +--------+---------+
-                    |
-                    v
-           Natural language answer
-```
+6. Functional Requirements
+6.1 MCP Server
 
+must load tools dynamically
 
-Key capabilities
-1. Log & event ingestion
+each tool must have:
 
-Pulls log streams from Loki
+schema.json file
 
-Extracts incidents, anomalies, patterns
+input_schema & output_schema
 
-Creates Incident, LogSnippet graph nodes
+descriptive metadata
 
-2. Metrics ingestion
+must log:
 
-Pulls cluster + service metrics from Prometheus
+request
 
-Attaches MetricSnapshot nodes to incidents
+response
 
-3. Topology ingestion
+latency
 
-Automatically maps:
+model used
 
-Services
+Tools V1:
 
-Pods
+file.ingest
 
-Nodes
+doc.extract
 
-Deployments
-to graph relationships that GraphRAG can reason over.
+doc.chunk
 
-4. Knowledge graph
+doc.semantic_extract
 
-Neo4j ties together:
+rag.query
 
-incidents
+kg.resolve_entities
 
-services
+kg.append
 
-nodes
+6.2 Ingestion Pipeline
 
-metrics
+detect file type (pdf, docx, html, txt)
+
+normalize into markdown
+
+LLM-assisted structural extraction
+
+chunk into semantically meaningful blocks
+
+store in DB
+
+6.3 Semantic Extraction (Model)
+
+treat as a trainable unit
+
+maintain evaluation dataset
+
+maintain revision logs
+
+tuning rounds
+
+accuracy targets
+
+6.4 RAG Subsystem
+
+vector search
+
+filtering
+
+scoring
+
+ranking
+
+return with provenance
+
+must work even if KG is empty
+
+6.5 Knowledge Graph
+
+store:
+
+entities
+
+relationships
+
+types
+
+provenance
+
+must allow KG-only queries
+
+must integrate with RAG
+
+6.6 Retrieval API
+
+input:
+
+query
+
+top_k
+
+entity-first vs vector-first mode
+
+output:
+
+merged context
+
+6.7 CrewAI Agents
+
+Planner
+
+decides which tools to call
+
+Research Agent
+
+federated search (Brave, Tavily, others)
+
+ingestion of results
+
+basic dedupe
+
+Extraction Agent
+
+runs document → markdown → chunk → extract → db
+
+Reviewer Agent
+
+inspects outputs
+
+checks quality
+
+6.8 Operator UI
+
+upload documents
+
+run tools
+
+inspect KG
+
+test retrieval
+
+visualize logs
+
+run agents manually
+
+6.9 Observability
 
 logs
 
-runbooks
+metrics
 
-Agents use this as a shared world model — no private memory silos.
+traces
 
-5. Semantic search + graph reasoning
+error alerts
 
-MariaDB vector search + Neo4j graph expansion enables:
+eval dashboards
 
-retrieving relevant incidents
+7. Constraints & Engineering Principles
+Secure-by-Design
 
-similar logs
+no outbound code execution without user approval
 
-matching runbooks
+no unvalidated input to DBs
 
-identifying patterns across services
+strict schemas
 
-6. Local LLM integration
+sandbox LLM tool execution
 
-You control the models.
-Suggested triple-model design:
+minimal privileges
 
-Embedding model (Nemotron embedding or similar)
+zero trust between components
 
-Reasoning model (Nemotron instruct or similar)
+SOLID
 
-Optional reranker (small cross-encoder or LLM-based scoring)
+single-responsibility for each component
 
-Current stack
+agents do not perform business logic
 
-Backend: FastAPI
-Knowledge graph: Neo4j Community
-Vector DB: MariaDB 11+ (vector indexes enabled)
-Logs: Loki
-Metrics: Prometheus
-Dashboards: Grafana
-Models: Any local LLM (e.g., Nemotron, Llama, Phi, Gemma, etc.)
-Orchestration: Hand-rolled agent graph (LangGraph-style)
+MCP tools do not perform orchestration
 
-Roadmap
-0. Initial scaffolding ✔ current
+pipelines do not hold state
 
-Repo structure
+DRY
 
-Architecture docs
+shared utils extracted
 
-Docker compose stack
+DB queries centralized
 
-FastAPI skeleton
+schemas re-used
 
-Neo4j schema
+YAGNI
 
-1. Minimal ingestion pipeline
+build only what’s needed for Phase 1
 
-Basic Loki ingestion
+no premature agent additions
 
-Basic Prometheus scrape
+KISS / LOS
 
-Build sample topology + seed incidents
+prefer simple, readable flows
 
-2. GraphRAG engine
+avoid over-engineering pipelines
 
-Hybrid retrieval over Neo4j + MariaDB vectors
+default to naive implementation first
 
-Query rewriting and neighborhood expansion
+Replaceability
 
-3. Agents
+any component (model, DB, tool, agent) must be swappable via configuration
 
-Planner Agent
+Modularity
 
-Log Agent
+every module stands on its own
 
-Topology Agent
+no cross-imports
 
-Explainer Agent
+no circular dependencies
 
-Runbook Agent
+Contracts Everywhere
 
-4. Cluster explanation v1
+all interactions must go through schemas
 
-Explain service health
+schemas are versioned
 
-Summaries for incidents
+code fails fast if contract broken
 
-“Why is this node unstable?”
+8. Acceptance Criteria
+End-to-End Demo Works
 
-5. Real-time mode
+Operator can:
 
-Periodic ingestion
+upload doc
 
-Streaming updates
+ingestion runs
 
-Incident correlation
+semantic extraction populates DB
 
-6. UI
+KG updated
 
-Optional: small web dashboard or CLI
+RAG retrieval works
 
-Getting started
-Prereqs
+CrewAI agent runs multi-step flow
 
-Docker & Docker Compose
+UI shows logs + results
 
-Python 3.12 (optional for local dev)
+Replaceability Proof
 
-Bring up the stack
-docker-compose -f infra/docker-compose.yml up --build
+swap local model with remote model (OpenRouter) without code changes
 
-Test the API
-curl http://localhost:8000/health
+swap chunking algorithm via config
 
-Contributing
+swap DB table names via config
 
-This is an early, active project — contributions are welcome.
-Planned areas:
+swap agent model via config
 
-retrieval optimization
+Security
 
-agent design
+static analysis passes
 
-graph schemas
+tool schemas validated
 
-log/metrics ingestion adapters
+no arbitrary code execution
 
-LLM model adapters
+Performance
 
-UI
+ingestion under 5 seconds for small docs
 
-devops & deployment
+retrieval under 800ms
+
+9. Phase 1 Deliverables
+
+MCP server
+
+ingestion pipeline
+
+semantic extraction module
+
+RAG subsystem
+
+KG schema
+
+retrieval API
+
+4 CrewAI agents
+
+operator console UI
+
+observability stack
+
+documentation
+
+example workflows
+
+10. Future Phases (Not in Scope)
+
+full automation loops
+
+anomaly-based triggers
+
+outreach automation
+
+multi-agent persistent projects
+
+fine-tuned models
+
+advanced UI dashboards
+
+distributed inference
+
+multi-node orchestration
