@@ -1,564 +1,190 @@
-DevMesh AI Platform – Phase 1 PRD
+<div align="center">
 
-Title: Eager Assistant Platform Foundation (Phase 1)
-Author: Pete / DevMesh
-Version: 1.0
-Status: Draft for build
+# 🤖 AI Distributed Systems Assistant
 
-1. Purpose
+### Local-first GraphRAG and multi-agent system for distributed infrastructure analysis
 
-Build the foundational components of the DevMesh AI agent ecosystem in a way that is:
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-005571?logo=fastapi)](https://fastapi.tiangolo.com)
+[![Neo4j](https://img.shields.io/badge/Neo4j-008CC1?logo=neo4j&logoColor=white)](https://neo4j.com)
 
-contract-driven
+[Architecture](docs/ARCHITECTURE.md) • [Getting Started](#-quick-start) • [Roadmap](#-roadmap)
 
-modular
+</div>
 
-replaceable at every layer
+---
 
-secure-by-design
+## 🎯 Overview
 
-aligned with industry best practices (SOLID, DRY, YAGNI, KISS/LOS)
+An intelligent assistant that helps you understand complex distributed systems by correlating logs, metrics, and topology into actionable insights.
 
-scalable
+**Built for operators who need answers, not dashboards.**
 
-compatible with Claude Code, CrewAI, local inference, and remote inference
+### What It Does
 
-This phase focuses on:
+```mermaid
+graph LR
+    A[Logs/Metrics/Topology] --> B[AI Agent System]
+    B --> C[Knowledge Graph]
+    C --> D[GraphRAG]
+    D --> E[Incident Analysis]
+    D --> F[Root Cause Detection]
+    D --> G[Runbook Suggestions]
+```
 
-establishing a clean MCP
+- 🔍 **Ingests** topology (services, nodes, pods), logs (via Loki), and metrics (via Prometheus)
+- 🧠 **Analyzes** using GraphRAG + multi-agent workflows
+- 💡 **Explains** incidents, correlates events, and suggests remediation steps
+- 🏠 **Runs locally** on your own hardware with open-source models
 
-building the ingestion → semantic extraction → RAG → KG → retrieval pipeline
+---
 
-defining the agent framework (CrewAI)
+## 🏗️ Architecture
 
-creating an initial operator UI
+### Core Components
 
-setting the blueprint for iterative agent addition
+| Layer | Technology | Purpose |
+|-------|-----------|---------|
+| **API** | FastAPI | HTTP endpoints and orchestration |
+| **Knowledge** | MariaDB + Neo4j | Vector storage + graph relationships |
+| **Observability** | Prometheus, Loki, Grafana | Metrics, logs, and dashboards |
+| **AI** | Multi-agent system | Specialized agents for topology, logs, and analysis |
 
-This PRD defines the contract for all future components.
+### Agent System
 
-2. Problem Statement
+```
+┌─────────────┐
+│   Planner   │  Routes queries to specialist agents
+└──────┬──────┘
+       │
+   ┌───┴────┬────────┬─────────┐
+   │        │        │         │
+┌──▼──┐ ┌──▼───┐ ┌──▼──────┐ ┌▼────────┐
+│ Log │ │Topo  │ │Explainer│ │Runbook  │
+│Agent│ │Agent │ │ Agent   │ │Agent    │
+└─────┘ └──────┘ └─────────┘ └─────────┘
+```
 
-Current prototype:
+**Topology Agent** → Syncs cluster/service graph into Neo4j  
+**Log Agent** → Analyzes logs and creates incident nodes  
+**Explainer Agent** → Uses GraphRAG to explain what's happening  
+**Runbook Agent** → Links incidents to relevant documentation
 
-mixes logic with orchestration
+---
 
-has MCP wrapped around manual steps
+## 🚀 Quick Start
 
-lacks formal contracts
+### Prerequisites
 
-has inconsistent ingestion logic
+- Docker + docker-compose
+- (Optional) Python 3.12 for local development
 
-has no semantic extraction tuning loop
+### Launch the Stack
 
-has no unified RAG/KG subsystem
+```bash
+# Clone the repository
+git clone https://github.com/PeterGreenAppliedAI/ai-distributed-systems-assistant.git
+cd ai-distributed-systems-assistant
 
-uses terminal-only interfaces
+# Start all services
+docker-compose -f infra/docker-compose.yml up --build
 
-cannot run autonomous cycles (outreach, research, ingestion, anomaly detection, etc.)
+# Verify services are running
+curl http://localhost:8000/health
+```
 
-lacks modular agents with clear boundaries
+### Access Points
 
-This causes:
+| Service | URL | Purpose |
+|---------|-----|---------|
+| API | http://localhost:8000 | FastAPI backend |
+| Neo4j Browser | http://localhost:7474 | Graph database UI |
+| Grafana | http://localhost:3000 | Dashboards |
+| Prometheus | http://localhost:9090 | Metrics |
+| Loki | http://localhost:3100 | Logs |
 
-high coupling
+---
 
-low replaceability
+## 📊 Project Status
 
-difficulty in testing
+> 🚧 **Early Development** - Active scaffolding in progress. Not production-ready.
 
-fragile workflows
+### Roadmap
 
-inability to scale or expand cleanly
+- [x] Project structure and Docker setup
+- [ ] Basic Neo4j schema + seed data
+- [ ] Loki + Prometheus + Grafana integration
+- [ ] First GraphRAG query over sample topology
+- [ ] Log Agent + Explainer Agent minimal loop
+- [ ] Multi-agent orchestration
+- [ ] Production hardening
 
-Phase 1 must establish the foundation so future agents are plug-and-play.
+---
 
-3. Goals & Non-Goals
-3.1 Goals
+## 🧪 Tech Stack
 
-Define and implement a clean MCP server
+<table>
+<tr>
+<td width="50%">
 
-all tools expose strict JSON input/output schemas
+**Backend & API**
+- Python 3.12
+- FastAPI
+- Uvicorn
 
-no business logic inside the MCP server
+**Storage & Retrieval**
+- MariaDB 11+ (vector support)
+- Neo4j Community Edition
+- GraphRAG hybrid retrieval
 
-MCP = contracts + pure operations
+</td>
+<td width="50%">
 
-Build the unified ingestion pipeline
+**Observability**
+- Prometheus (metrics)
+- Loki (log aggregation)
+- Grafana (visualization)
 
-document detection
+**AI/ML (Planned)**
+- Nemotron embeddings
+- Nemotron instruct (reasoning)
+- Optional reranker model
 
-LLM-assisted extraction
+</td>
+</tr>
+</table>
 
-markdown normalization
+---
 
-chunking
+## 📚 Documentation
 
-semantic metadata extraction treated as a model with tuning
+- [**Architecture Deep Dive**](docs/ARCHITECTURE.md) - System design and component details
+- [**Phase 1 PRD**](docs/PRD.md) - Product requirements and roadmap
 
-Implement RAG subsystem with proper semantic extraction tuning
+---
 
-iterative improvement
+## 🤝 Contributing
 
-eval sets
+This is an early-stage project. Contributions, ideas, and feedback are welcome!
 
-observability logs
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Submit a pull request
 
-stateless retrieval API
+---
 
-Build version-1 Knowledge Graph schema
+## 📄 License
 
-entities, relations, provenance
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-stored in MariaDB with vector engine
+---
 
-fully replaceable
+<div align="center">
 
-Build the retrieval service
+**Built with 🔧 by DevMesh Services**
 
-KG → vector search → context assembly
+*Making distributed systems observable and explainable*
 
-unified interface
-
-exposed as a tool to agents
-
-Implement CrewAI foundational agent roles
-
-Planner
-
-Research agent
-
-Extractor agent
-
-Reviewer agent
-
-Create a simple operator console UI (Streamlit/OpenWebUI)
-
-model selection
-
-MCP tool tester
-
-retrieval viewer
-
-ingestion logs
-
-KG visualization (basic)
-
-Establish logging, traceability, and evaluation
-
-model evals
-
-extraction evals
-
-retrieval evals
-
-full observability
-
-Ship a working end-to-end pipeline
-
-operator uploads file
-
-ingestion
-
-extraction
-
-chunking
-
-RAG
-
-KG update
-
-retrieval
-
-agentical workflow execution
-
-3.2 Non-Goals
-
-Building a production UI
-
-Building 10+ agents
-
-Full automation (campaign loops, anomaly loops, etc.)
-
-Multi-node scheduling
-
-LLM fine-tuning
-
-Optimization for speed or cost
-
-Workforce integrations
-
-Phase 1 = foundation, not empire.
-
-4. Users / Personas
-Primary User: Operator (You)
-
-Needs:
-
-upload data
-
-test ingestion
-
-test retrieval
-
-examine KG entities
-
-run agents
-
-debug pipelines
-
-inspect logs
-
-Secondary User: Developer (Also you)
-
-Needs:
-
-clean modular code
-
-well-documented contracts
-
-testable tools
-
-easy swap of models/engines
-
-reproducible workflows
-
-5. High-Level Architecture
-5.1 Core Pillars
-                 ┌──────────────────────────┐
-                 │      Operator UI         │
-                 └─────────────┬────────────┘
-                               │
-                     (CrewAI orchestrator)
-                               │
-                   ┌───────────▼───────────┐
-                   │         MCP            │
-                   │ (contract layer only)  │
-                   └─┬──────────┬──────────┘
-     ingestion.tools │          │ retrieval.tools
-                     │          │
-             ┌───────▼──────┐   ▼──────────────┐
-             │ Ingestion     │                  │
-             │ Pipeline      │  Retrieval API   │
-             └───┬──────┬───┘                  │
-                 │      │                      │
-        semantic │     RAG                     │
-      extraction │     KG lookup               │
-                 │      │                      │
-                 ▼      ▼                      ▼
-            ┌────────────────────────────────────────┐
-            │         MariaDB + Vector Engine        │
-            │   (Documents, Chunks, Entities, KG)    │
-            └────────────────────────────────────────┘
-
-
-Every interaction is governed by contracts, not ad-hoc calls.
-
-6. Functional Requirements
-6.1 MCP Server
-
-must load tools dynamically
-
-each tool must have:
-
-schema.json file
-
-input_schema & output_schema
-
-descriptive metadata
-
-must log:
-
-request
-
-response
-
-latency
-
-model used
-
-Tools V1:
-
-file.ingest
-
-doc.extract
-
-doc.chunk
-
-doc.semantic_extract
-
-rag.query
-
-kg.resolve_entities
-
-kg.append
-
-6.2 Ingestion Pipeline
-
-detect file type (pdf, docx, html, txt)
-
-normalize into markdown
-
-LLM-assisted structural extraction
-
-chunk into semantically meaningful blocks
-
-store in DB
-
-6.3 Semantic Extraction (Model)
-
-treat as a trainable unit
-
-maintain evaluation dataset
-
-maintain revision logs
-
-tuning rounds
-
-accuracy targets
-
-6.4 RAG Subsystem
-
-vector search
-
-filtering
-
-scoring
-
-ranking
-
-return with provenance
-
-must work even if KG is empty
-
-6.5 Knowledge Graph
-
-store:
-
-entities
-
-relationships
-
-types
-
-provenance
-
-must allow KG-only queries
-
-must integrate with RAG
-
-6.6 Retrieval API
-
-input:
-
-query
-
-top_k
-
-entity-first vs vector-first mode
-
-output:
-
-merged context
-
-6.7 CrewAI Agents
-
-Planner
-
-decides which tools to call
-
-Research Agent
-
-federated search (Brave, Tavily, others)
-
-ingestion of results
-
-basic dedupe
-
-Extraction Agent
-
-runs document → markdown → chunk → extract → db
-
-Reviewer Agent
-
-inspects outputs
-
-checks quality
-
-6.8 Operator UI
-
-upload documents
-
-run tools
-
-inspect KG
-
-test retrieval
-
-visualize logs
-
-run agents manually
-
-6.9 Observability
-
-logs
-
-metrics
-
-traces
-
-error alerts
-
-eval dashboards
-
-7. Constraints & Engineering Principles
-Secure-by-Design
-
-no outbound code execution without user approval
-
-no unvalidated input to DBs
-
-strict schemas
-
-sandbox LLM tool execution
-
-minimal privileges
-
-zero trust between components
-
-SOLID
-
-single-responsibility for each component
-
-agents do not perform business logic
-
-MCP tools do not perform orchestration
-
-pipelines do not hold state
-
-DRY
-
-shared utils extracted
-
-DB queries centralized
-
-schemas re-used
-
-YAGNI
-
-build only what’s needed for Phase 1
-
-no premature agent additions
-
-KISS / LOS
-
-prefer simple, readable flows
-
-avoid over-engineering pipelines
-
-default to naive implementation first
-
-Replaceability
-
-any component (model, DB, tool, agent) must be swappable via configuration
-
-Modularity
-
-every module stands on its own
-
-no cross-imports
-
-no circular dependencies
-
-Contracts Everywhere
-
-all interactions must go through schemas
-
-schemas are versioned
-
-code fails fast if contract broken
-
-8. Acceptance Criteria
-End-to-End Demo Works
-
-Operator can:
-
-upload doc
-
-ingestion runs
-
-semantic extraction populates DB
-
-KG updated
-
-RAG retrieval works
-
-CrewAI agent runs multi-step flow
-
-UI shows logs + results
-
-Replaceability Proof
-
-swap local model with remote model (OpenRouter) without code changes
-
-swap chunking algorithm via config
-
-swap DB table names via config
-
-swap agent model via config
-
-Security
-
-static analysis passes
-
-tool schemas validated
-
-no arbitrary code execution
-
-Performance
-
-ingestion under 5 seconds for small docs
-
-retrieval under 800ms
-
-9. Phase 1 Deliverables
-
-MCP server
-
-ingestion pipeline
-
-semantic extraction module
-
-RAG subsystem
-
-KG schema
-
-retrieval API
-
-4 CrewAI agents
-
-operator console UI
-
-observability stack
-
-documentation
-
-example workflows
-
-10. Future Phases (Not in Scope)
-
-full automation loops
-
-anomaly-based triggers
-
-outreach automation
-
-multi-agent persistent projects
-
-fine-tuned models
-
-advanced UI dashboards
-
-distributed inference
-
-multi-node orchestration
+</div>
