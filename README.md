@@ -9,7 +9,7 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-005571?logo=fastapi)](https://fastapi.tiangolo.com)
 [![Neo4j](https://img.shields.io/badge/Neo4j-008CC1?logo=neo4j&logoColor=white)](https://neo4j.com)
 
-[Architecture](docs/ARCHITECTURE.md) • [Getting Started](#-quick-start) • [Roadmap](#-roadmap)
+[Getting Started](#-quick-start) • [Architecture](#-architecture) • [Roadmap](#-roadmap)
 
 </div>
 
@@ -154,13 +154,6 @@ curl http://localhost:8000/health
 </td>
 </tr>
 </table>
-
----
-
-## 📚 Documentation
-
-- [**Architecture Deep Dive**](docs/ARCHITECTURE.md) - System design and component details
-- [**Phase 1 PRD**](docs/PRD.md) - Product requirements and roadmap
 
 ---
 
