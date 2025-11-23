@@ -24,31 +24,35 @@ Suggest runbooks or next actions
 
 All locally, without sending your data to any cloud LLM.
 
-High-level architecture
+
+## High-level architecture
+
+```
        +----------------------+
-       |    User Query        |
+       |      User Query      |
        +----------+-----------+
                   |
                   v
        +----------+-----------+
-       |      Planner Agent   |
+       |       Planner Agent  |
        +----+---------+-------+
             |         |
    +--------+         +---------+
    |                            |
    v                            v
 +--+----------------+    +------+-----------------+
-|    Log Agent      |    |  Topology Agent        |
+|     Log Agent     |    |    Topology Agent      |
 |  (Loki ingestion) |    | (services/nodes/pods)  |
 +--------+----------+    +-----------+------------+
          |                           |
          v                           v
 +--------+----------------------------+----------+
-|              Knowledge Graph (Neo4j)          |
+|              Knowledge Graph (Neo4j)           |
+|   Services • Nodes • Incidents • Runbooks     |
 +-------------------+---------------------------+
                     |
        +------------+-------------+
-       |     Vector Store         |
+       |      Vector Store        |
        |   (MariaDB w/ vectors)   |
        +------------+-------------+
                     |
@@ -59,6 +63,8 @@ High-level architecture
                     |
                     v
            Natural language answer
+```
+
 
 Key capabilities
 1. Log & event ingestion
