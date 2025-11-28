@@ -3,7 +3,7 @@
 **AI-Native Observability for Local/Hybrid Infrastructure**
 
 Local-first GraphRAG and multi-agent system for analyzing distributed infrastructure, logs, and metrics.
-Built with MariaDB, Neo4j (planned), Loki, Prometheus, and open-source LLMs.
+Built with MariaDB, FalkorDB (planned), Loki, Prometheus, and open-source LLMs.
 
 ---
 
