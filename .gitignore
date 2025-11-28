@@ -1,0 +1,43 @@
+# DevMesh Platform - Git Ignore
+
+# Environment variables (CONTAINS SECRETS - NEVER COMMIT)
+.env
+.env.local
+.env.production
+
+# Safe to commit - template without secrets
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# DevMesh specific
+shipper/cursor.txt
+shipper/last_ingested.txt
+*.log
+/tmp/
+daemon.log
+
+# Test files
+test_*.py
