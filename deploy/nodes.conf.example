@@ -1,0 +1,16 @@
+# DevMesh Node Configuration
+# Copy to nodes.conf and edit for your infrastructure
+#
+# Format: IP NODE_NAME API_HOST SSH_USER
+#
+# API_HOST should be the IP where the DevMesh API is running (port 8000)
+# If nodes are on different subnets, use the appropriate API IP for each
+#
+# Example for multi-subnet setup:
+#   - Nodes on 10.0.0.x use API at 10.0.0.20
+#   - Nodes on 192.168.1.x use API at 192.168.1.184 (same server, different interface)
+
+# Example entries (uncomment and edit):
+# 10.0.0.19   gpu-node          10.0.0.20       myuser
+# 10.0.0.18   db-server         10.0.0.20       root
+# 192.168.1.50 remote-node      192.168.1.10    admin

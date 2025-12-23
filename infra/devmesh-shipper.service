@@ -1,0 +1,15 @@
+[Unit]
+Description=DevMesh Log Shipper
+After=network.target devmesh-api.service
+
+[Service]
+Type=simple
+User=tadeu718
+WorkingDirectory=/home/tadeu718/devmesh-platform
+Environment="PATH=/home/tadeu718/devmesh-platform/venv/bin:/usr/bin:/bin"
+ExecStart=/home/tadeu718/devmesh-platform/venv/bin/python -u shipper/log_shipper_daemon.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

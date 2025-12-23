@@ -1,0 +1,18 @@
+[Unit]
+Description=DevMesh TTL Cleanup Job
+After=network.target mariadb.service
+
+[Service]
+Type=oneshot
+User=tadeu718
+WorkingDirectory=/home/tadeu718/devmesh-platform
+Environment="PATH=/home/tadeu718/devmesh-platform/venv/bin"
+ExecStart=/home/tadeu718/devmesh-platform/venv/bin/python /home/tadeu718/devmesh-platform/infra/ttl_cleanup.py --days 90
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=devmesh-ttl
+
+[Install]
+WantedBy=multi-user.target

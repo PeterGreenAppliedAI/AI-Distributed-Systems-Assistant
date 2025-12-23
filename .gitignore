@@ -39,5 +39,9 @@ shipper/last_ingested.txt
 /tmp/
 daemon.log
 
+# Deployment - infrastructure-specific configs
+deploy/nodes.conf
+!deploy/nodes.conf.example
+
 # Test files
 test_*.py

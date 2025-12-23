@@ -2,6 +2,9 @@
 """
 DevMesh Platform - Real-Time Log Shipper Daemon
 Continuously streams logs from journald to DevMesh API in real-time
+
+Includes configurable filtering to improve signal-to-noise ratio for LLM analysis.
+Filter rules are loaded from filter_config.yaml (schema-validated).
 """
 
 import os
@@ -25,6 +28,9 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Load environment variables
 load_dotenv()
 
+# Import filter module (DRY - single source of truth)
+from filter_config import FilterConfig, LogFilter
+
 # Configuration
 API_HOST = os.getenv('API_HOST', '127.0.0.1')
 API_PORT = os.getenv('API_PORT', '8000')
@@ -36,6 +42,16 @@ RETRY_DELAY = 5  # seconds to wait before retrying on failure
 
 # Global flag for graceful shutdown
 shutdown_requested = False
+
+# Load filter configuration from YAML (schema-validated)
+try:
+    filter_config = FilterConfig.load_default()
+    log_filter = LogFilter(filter_config)
+    print(f"[INFO] Filter config loaded: {len(filter_config.drop_patterns)} patterns")
+except Exception as e:
+    print(f"[WARN] Failed to load filter config, filtering disabled: {e}")
+    filter_config = None
+    log_filter = None
 
 
 def signal_handler(signum, frame):
@@ -220,6 +236,14 @@ def follow_journald():
 
                 # Transform to DevMesh schema
                 log_event = transform_journald_to_log_event(entry)
+
+                # Apply filtering (using shared filter module)
+                if log_filter is not None:
+                    keep, drop_reason = log_filter.filter_log(log_event)
+                    if not keep:
+                        # Skip this log - don't add to batch
+                        continue
+
                 batch.append(log_event)
                 log_count += 1
 
@@ -310,6 +334,13 @@ def main():
     print(f"API: {API_BASE_URL}")
     print(f"Batch size: {BATCH_SIZE}")
     print(f"Cursor file: {CURSOR_FILE}")
+    if log_filter is not None and filter_config is not None:
+        print(f"Filtering: ENABLED (config: filter_config.yaml)")
+        print(f"  - {len(filter_config.drop_patterns)} noise patterns")
+        print(f"  - {len(filter_config.always_keep_services)} protected services")
+        print(f"  - Keeping levels: {', '.join(sorted(filter_config.always_keep_levels))}")
+    else:
+        print(f"Filtering: DISABLED")
     print("=" * 80)
 
     # Check API health before starting
@@ -330,6 +361,8 @@ def main():
 
     print("\n" + "=" * 80)
     print("DevMesh Log Shipper Daemon stopped")
+    if log_filter is not None:
+        print(log_filter.get_stats_summary())
     print("=" * 80)
 
 

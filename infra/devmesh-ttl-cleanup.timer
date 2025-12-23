@@ -1,0 +1,10 @@
+[Unit]
+Description=Run DevMesh TTL Cleanup daily at 3 AM
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

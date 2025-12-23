@@ -1,0 +1,94 @@
+# DevMesh Log Filter Configuration
+#
+# This file defines which logs to keep vs drop for improved signal-to-noise ratio.
+# Changes to this file take effect on shipper restart.
+#
+# Schema:
+#   enabled: bool - Master switch for filtering
+#   always_keep_levels: list[str] - Log levels to never filter out
+#   always_keep_services: list[str] - Services to never filter out
+#   drop_patterns: list[object] - Patterns to drop
+#     - name: str - Human-readable name for auditing
+#       pattern: str - Regex pattern to match against message content
+#       reason: str - Why this pattern is dropped (for documentation)
+
+enabled: true
+
+# Log levels to always keep regardless of message content
+# These represent important operational events
+always_keep_levels:
+  - FATAL
+  - CRITICAL
+  - ERROR
+  - WARN
+  - WARNING
+
+# Services whose logs are always kept regardless of content
+# These are critical infrastructure services
+always_keep_services:
+  - ssh.service
+  - sshd
+  - systemd-logind.service
+  - docker.service
+  - containerd.service
+  - kubelet.service
+  - nginx.service
+  - postgresql.service
+  - mariadb.service
+  - mysql.service
+  - redis.service
+
+# Patterns to drop - logs matching these are filtered out
+# Each pattern requires a name, regex pattern, and reason for auditability
+drop_patterns:
+  # Loki table_manager - runs every 1-5 minutes, ~20k logs in 5 days
+  - name: loki_table_manager_upload
+    pattern: 'caller=table_manager\.go.*msg="uploading tables"'
+    reason: Routine Loki index upload operation
+
+  - name: loki_table_manager_sync
+    pattern: 'caller=table_manager\.go.*msg="syncing tables"'
+    reason: Routine Loki table sync operation
+
+  - name: loki_table_manager_clean
+    pattern: 'caller=table_manager\.go.*msg="cleaning tables cache"'
+    reason: Routine Loki cache cleanup
+
+  - name: loki_table_manager_handover
+    pattern: 'caller=table_manager\.go.*msg="handing over indexes"'
+    reason: Routine Loki index handover
+
+  - name: loki_table_manager_readiness
+    pattern: 'caller=table_manager\.go.*msg="query readiness"'
+    reason: Routine Loki readiness check
+
+  # Loki compactor - runs frequently, ~13k logs in 5 days
+  - name: loki_compactor_start
+    pattern: 'caller=compactor\.go.*msg="compacting table"'
+    reason: Routine Loki compaction start
+
+  - name: loki_compactor_finish
+    pattern: 'caller=compactor\.go.*msg="finished compacting"'
+    reason: Routine Loki compaction completion
+
+  # Loki checkpoint - runs frequently, ~5k logs in 5 days
+  - name: loki_checkpoint
+    pattern: 'caller=checkpoint\.go'
+    reason: Routine Loki WAL checkpoint
+
+  # Loki table operations - very repetitive
+  - name: loki_table_list
+    pattern: 'caller=table\.go.*msg="listed files"'
+    reason: Routine Loki file listing
+
+  - name: loki_spanlogger_cache_built
+    pattern: 'caller=spanlogger\.go.*msg="table cache built"'
+    reason: Routine Loki cache build completion
+
+  - name: loki_spanlogger_building
+    pattern: 'caller=spanlogger\.go.*msg="building table'
+    reason: Routine Loki cache building
+
+  - name: loki_spanlogger_names
+    pattern: 'caller=spanlogger\.go.*msg="table names cache'
+    reason: Routine Loki names cache operation

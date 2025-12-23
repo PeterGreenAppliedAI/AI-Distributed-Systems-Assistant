@@ -1,14 +1,21 @@
 """
 DevMesh Platform - API Routes
 Ingestion and query endpoints
+
+Principles applied:
+- Idempotent Actions: Duplicate logs are detected and skipped via hash
+- Contracts Everywhere: Pydantic schemas enforce structure
+- Auditability: All operations logged
+- Domain Errors: Business logic errors raised, translated at boundary
 """
 
 import json
+import hashlib
 import logging
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Query, status
 import pymysql
 
 from models.schemas import (
@@ -20,8 +27,58 @@ from models.schemas import (
     LogLevel
 )
 from db.database import get_connection
+from errors import EmptyBatchError, IngestionError, QueryError, DatabaseConnectionError
 
 logger = logging.getLogger(__name__)
+
+# =============================================================================
+# Schema Cache (DRY - check once, use everywhere)
+# =============================================================================
+_has_hash_column: Optional[bool] = None
+
+
+def _check_hash_column_exists() -> bool:
+    """
+    Check if log_hash column exists in log_events table.
+    Result is cached for performance (schema doesn't change at runtime).
+    """
+    global _has_hash_column
+
+    if _has_hash_column is not None:
+        return _has_hash_column
+
+    try:
+        conn = get_connection()
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT COUNT(*) as cnt
+                FROM information_schema.columns
+                WHERE table_schema = DATABASE()
+                  AND table_name = 'log_events'
+                  AND column_name = 'log_hash'
+            """)
+            _has_hash_column = cursor.fetchone()['cnt'] > 0
+        conn.close()
+        logger.info(f"Schema check: log_hash column {'exists' if _has_hash_column else 'missing'}")
+    except Exception as e:
+        logger.warning(f"Failed to check schema, assuming no hash column: {e}")
+        _has_hash_column = False
+
+    return _has_hash_column
+
+
+def compute_log_hash(log: LogEventCreate) -> str:
+    """
+    Compute a hash for deduplication.
+
+    Hash is based on: timestamp + host + service + message
+    This ensures the same log event won't be inserted twice on retry.
+
+    Returns:
+        8-character hex hash (truncated SHA256)
+    """
+    content = f"{log.timestamp}|{log.host}|{log.service}|{log.message}"
+    return hashlib.sha256(content.encode()).hexdigest()[:16]
 
 # Create router
 router = APIRouter()
@@ -49,30 +106,49 @@ async def ingest_logs(request: LogIngestRequest):
     - errors: List of error messages (if any)
     """
     if not request.logs:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No logs provided in request"
-        )
+        raise EmptyBatchError()
 
-    conn = get_connection()
+    # Get cached schema check result
+    has_hash_column = _check_hash_column_exists()
+
+    try:
+        conn = get_connection()
+    except Exception as e:
+        raise DatabaseConnectionError(f"Failed to connect to database: {e}")
+
     ingested = 0
+    duplicates = 0
     failed = 0
     errors = []
 
     try:
         with conn.cursor() as cursor:
-            # Prepare INSERT statement
-            insert_sql = """
-            INSERT INTO log_events (
-                timestamp, source, service, host, level,
-                trace_id, span_id, event_type, error_code,
-                message, meta_json
-            ) VALUES (
-                %s, %s, %s, %s, %s,
-                %s, %s, %s, %s,
-                %s, %s
-            )
-            """
+            if has_hash_column:
+                # Use INSERT IGNORE with hash for idempotent ingestion
+                insert_sql = """
+                INSERT IGNORE INTO log_events (
+                    log_hash, timestamp, source, service, host, level,
+                    trace_id, span_id, event_type, error_code,
+                    message, meta_json
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s,
+                    %s, %s
+                )
+                """
+            else:
+                # Fallback: no deduplication (legacy mode)
+                insert_sql = """
+                INSERT INTO log_events (
+                    timestamp, source, service, host, level,
+                    trace_id, span_id, event_type, error_code,
+                    message, meta_json
+                ) VALUES (
+                    %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s,
+                    %s, %s
+                )
+                """
 
             # Insert each log
             for log in request.logs:
@@ -80,20 +156,42 @@ async def ingest_logs(request: LogIngestRequest):
                     # Convert meta_json dict to JSON string if present
                     meta_json_str = json.dumps(log.meta_json) if log.meta_json else None
 
-                    cursor.execute(insert_sql, (
-                        log.timestamp,
-                        log.source,
-                        log.service,
-                        log.host,
-                        log.level.value,  # Convert enum to string
-                        log.trace_id,
-                        log.span_id,
-                        log.event_type,
-                        log.error_code,
-                        log.message,
-                        meta_json_str
-                    ))
-                    ingested += 1
+                    if has_hash_column:
+                        log_hash = compute_log_hash(log)
+                        cursor.execute(insert_sql, (
+                            log_hash,
+                            log.timestamp,
+                            log.source,
+                            log.service,
+                            log.host,
+                            log.level.value,
+                            log.trace_id,
+                            log.span_id,
+                            log.event_type,
+                            log.error_code,
+                            log.message,
+                            meta_json_str
+                        ))
+                    else:
+                        cursor.execute(insert_sql, (
+                            log.timestamp,
+                            log.source,
+                            log.service,
+                            log.host,
+                            log.level.value,
+                            log.trace_id,
+                            log.span_id,
+                            log.event_type,
+                            log.error_code,
+                            log.message,
+                            meta_json_str
+                        ))
+
+                    # Check if row was actually inserted (INSERT IGNORE returns 0 for dups)
+                    if cursor.rowcount > 0:
+                        ingested += 1
+                    else:
+                        duplicates += 1
 
                 except Exception as e:
                     failed += 1
@@ -103,20 +201,29 @@ async def ingest_logs(request: LogIngestRequest):
 
             # Commit transaction
             conn.commit()
-            logger.info(f"✓ Ingested {ingested} logs ({failed} failed)")
+            if duplicates > 0:
+                logger.info(f"✓ Ingested {ingested} logs ({duplicates} duplicates skipped, {failed} failed)")
+            else:
+                logger.info(f"✓ Ingested {ingested} logs ({failed} failed)")
 
+    except (EmptyBatchError, DatabaseConnectionError):
+        # Re-raise domain errors
+        raise
     except Exception as e:
         conn.rollback()
         logger.error(f"✗ Batch ingestion failed: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Batch ingestion failed: {str(e)}"
+        raise IngestionError(
+            message="Batch ingestion failed",
+            ingested=ingested,
+            failed=failed,
+            errors=errors
         )
     finally:
         conn.close()
 
     return LogIngestResponse(
         ingested=ingested,
+        duplicates=duplicates,
         failed=failed,
         errors=errors if errors else None
     )
@@ -151,7 +258,10 @@ async def query_logs(
     **Returns:**
     - List of matching log events, ordered by timestamp DESC
     """
-    conn = get_connection()
+    try:
+        conn = get_connection()
+    except Exception as e:
+        raise DatabaseConnectionError(f"Failed to connect to database: {e}")
 
     try:
         with conn.cursor() as cursor:
@@ -222,11 +332,11 @@ async def query_logs(
             logger.info(f"✓ Query returned {len(results)} logs (service={service}, host={host}, level={level})")
             return results
 
+    except DatabaseConnectionError:
+        # Re-raise domain errors
+        raise
     except Exception as e:
         logger.error(f"✗ Query failed: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Query failed: {str(e)}"
-        )
+        raise QueryError("Log query failed")
     finally:
         conn.close()

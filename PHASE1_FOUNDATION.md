@@ -2,9 +2,10 @@
 ## AI-Native Observability for Local Infrastructure
 
 **Date**: November 28, 2025
-**Node**: dev-services
-**Status**: Phase 1 Complete - Real-Time Log Streaming Operational
-**Next Review**: 24 hours (Nov 29, 2025)
+**Last Updated**: December 23, 2025
+**Node**: dev-services (primary), 7 additional nodes pending
+**Status**: Phase 1 Complete - Extended Run (26 days, 203K logs)
+**Next Milestone**: Multi-Node Deployment (see NEXT_STEPS.md)
 
 ---
 
@@ -14,15 +15,18 @@ We built the **foundational logging infrastructure** for DevMesh Platform - an A
 
 **What works right now:**
 - ✅ Real-time log streaming from dev-services node to MariaDB
-- ✅ 11,733 logs ingested (historical + real-time)
+- ✅ 203,017 logs ingested over 26-day extended run
 - ✅ HTTP API for log ingestion and querying
 - ✅ No blind spots - logs stream continuously as they're generated
-- ✅ Indexed, queryable storage in MariaDB
+- ✅ Indexed, queryable storage in MariaDB (96.75 MB)
+- ✅ System validated stable (26+ days continuous operation)
+- ✅ TTL cleanup job implemented (90-day retention)
+- ✅ Noise filtering for improved signal-to-noise ratio
+- ✅ Centralized error handling architecture
+- ✅ Deployment scripts for multi-node rollout
 
 **What's next:**
-- 24-hour burn-in test to measure storage growth and performance
-- Scale to remaining 8 nodes (10.0.0.x network)
-- Add log retention/TTL mechanism
+- Deploy shipper to 7 additional nodes (see NEXT_STEPS.md)
 - Phase 2: Embeddings and semantic search
 
 ---
@@ -468,26 +472,62 @@ LIMIT 10
 
 ## Current Metrics & State
 
+### Burn-In Test Results (5.5 Days: Nov 27 - Dec 3, 2025)
+
+**Status**: COMPLETE - System stable and validated
+
+| Metric | Initial Projection | Actual Result | Variance |
+|--------|-------------------|---------------|----------|
+| Total logs | ~55k (5 days) | 65,883 | +20% |
+| Daily average | ~11k logs/day | ~11,300 logs/day | +3% |
+| Table size | ~27.5 MB | 32.16 MB | +17% |
+| Bytes per log | 500 bytes | 520 bytes | +4% |
+
 ### Database Statistics
 
 ```
-Total logs: 11,733
-Date range: 2025-11-27 to 2025-11-28
+Total logs: 65,883
+Date range: 2025-11-27 to 2025-12-03 (5.5 days)
 Node: dev-services only
 
+Daily breakdown:
+  2025-11-27:  2,355 logs (partial day)
+  2025-11-28: 11,216 logs
+  2025-11-29: 11,309 logs
+  2025-11-30: 11,326 logs
+  2025-12-01: 11,346 logs
+  2025-12-02: 11,326 logs
+  2025-12-03:  7,005 logs (partial day)
+
 Top services:
-  user@1000.service    10,539 logs  (Loki, user processes)
-  kernel                  751 logs  (kernel messages)
-  session-*.scope         184 logs  (user sessions)
-  cron.service             79 logs  (cron jobs)
+  user@1000.service    60,216 logs  (91.4% - Loki processes)
+  kernel                4,299 logs  (6.5%)
+  cron.service            480 logs  (0.7%)
+  init.scope              309 logs  (0.5%)
+  Other                   579 logs  (0.9%)
 
 Log levels:
-  INFO                 10,585 logs  (90.2%)
-  WARN                    742 logs  (6.3%)
-  DEBUG                    44 logs  (0.4%)
-  ERROR                     1 log   (0.01%)
-  CRITICAL                  1 log   (0.01%)
+  INFO                 61,503 logs  (93.4%)
+  WARN                  4,299 logs  (6.5%)
+  DEBUG                    79 logs  (0.1%)
+  ERROR                     1 log   (<0.01%)
+  CRITICAL                  1 log   (<0.01%)
 ```
+
+### Loki Log Breakdown (91.4% of all logs)
+
+The `user@1000.service` logs are dominated by Loki internal operations:
+
+```
+Loki table_manager:  20,194 logs (33%)
+Loki compactor:      13,344 logs (22%)
+Loki checkpoint:      5,006 logs (8%)
+Loki other:           6,676 logs (11%)
+Non-Loki:            15,017 logs (25%)
+```
+
+**Finding**: ~75% of user@1000.service logs are Loki internal housekeeping.
+Consider filtering these for Phase 2 to improve signal-to-noise ratio.
 
 ### Storage
 
@@ -495,12 +535,14 @@ Log levels:
 Database: devmesh on 10.0.0.18
 Table: log_events
 
-Size estimate:
-  ~500 bytes per log entry (avg)
-  11,733 logs × 500 bytes ≈ 5.9 MB
+Actual measurements:
+  520 bytes per log entry (avg)
+  65,883 logs × 520 bytes = 32.16 MB
 
-With indexes:
-  Total table size ≈ 8-10 MB
+Message sizes:
+  Average message length: 126 characters
+  Maximum message length: 267 characters
+  Average metadata length: 63 characters
 ```
 
 ### Performance
@@ -515,30 +557,138 @@ Shipper performance:
   CPU usage       : 0.1-0.2%
   Memory          : ~30 MB
   Batch latency   : 1-2 minutes (to fill 50 logs)
+
+Hourly distribution (Dec 2 sample):
+  Average: 472 logs/hour
+  Min: 464 logs/hour
+  Max: 525 logs/hour
+  Variance: Very consistent
 ```
 
-### Estimated 24-Hour Growth
+### System Health Validation
 
-**Assumptions**:
-- dev-services generates ~11k logs/day (based on initial 24h sample)
-- Average log size: 500 bytes
-
-**Projections**:
 ```
-Daily growth:   11,000 logs/day × 500 bytes  ≈ 5.5 MB/day
-Weekly growth:  77,000 logs × 500 bytes      ≈ 38.5 MB/week
-Monthly growth: 330,000 logs × 500 bytes     ≈ 165 MB/month
-90-day target:  990,000 logs × 500 bytes     ≈ 495 MB (0.5 GB)
+✅ Shipper stability: Running continuously for 5.5 days
+✅ Data gaps: Only 1 gap (59 min on Nov 28 during initial setup)
+✅ Error events: Only 2 (sudo auth failures, expected)
+✅ Hourly consistency: ~470 logs/hour with minimal variance
+✅ API availability: 100% uptime during test
+```
+
+### Validated Growth Projections
+
+**Single node (dev-services)**:
+```
+Daily growth:   11,300 logs/day × 520 bytes  ≈ 5.8 MB/day
+Weekly growth:  79,100 logs × 520 bytes      ≈ 40.6 MB/week
+Monthly growth: 339,000 logs × 520 bytes     ≈ 176 MB/month
+90-day storage: 1,017,000 logs × 520 bytes   ≈ 522 MB
 ```
 
 **With 9 nodes** (dev-services + 8 others):
 ```
-Daily growth:   ~50 MB/day
-Monthly growth: ~1.5 GB/month
-90-day target:  ~4.5 GB
+Daily growth:   ~52 MB/day
+Monthly growth: ~1.6 GB/month
+90-day storage: ~4.7 GB
 ```
 
-**Action needed**: After 24hr burn-in, implement TTL cleanup (delete logs older than 90 days).
+### Action Items Post Burn-In
+
+1. ✅ **Burn-in complete** - System validated stable
+2. ✅ **TTL cleanup job** - `infra/ttl_cleanup.py` ready, systemd timer available
+3. ✅ **Data quality analysis** - Completed Dec 3, 2025 (see below)
+4. ✅ **Loki noise filtering** - Implemented in shipper daemon
+5. **Multi-node deployment** - Ready to proceed
+
+---
+
+## Data Quality Analysis (Dec 3, 2025)
+
+### Signal-to-Noise Problem
+
+Analysis of 67,283 logs from the burn-in period revealed a critical issue for LLM usefulness:
+
+| Category | Count | % of Total |
+|----------|-------|------------|
+| **Loki internal noise** | 60,457 | 89.9% |
+| **Actionable signal** | 5,054 | 7.5% |
+| **Ambiguous** | 1,772 | 2.6% |
+
+**Problem**: An LLM querying "what errors happened?" would get 12 Loki housekeeping
+messages for every 1 useful log. Semantic search would be dominated by noise.
+
+### Noise Breakdown (What Was Filtered)
+
+```
+Loki table_manager (uploading/syncing):  ~20k logs
+Loki compactor (compacting tables):      ~13k logs
+Loki checkpoint:                          ~5k logs
+Loki table cache operations:              ~7k logs
+Loki file listings:                       ~7k logs
+```
+
+### Signal Breakdown (What Remains Valuable)
+
+| Category | Count | LLM Value |
+|----------|-------|-----------|
+| Firewall blocks (UFW) | 4,383 | Medium - security events |
+| Session open/close | 359 | High - access tracking |
+| Cron executions | 175 | Medium - job audit |
+| Service starts/stops | 118 | High - availability |
+| SSH logins | 5 | High - security |
+| Auth failures | 2 | High - security incidents |
+
+### Solution: Log Filtering
+
+Implemented configurable filtering in `shipper/log_shipper_daemon.py`:
+
+**Before filtering**: 7.5% signal (1:12 signal-to-noise ratio)
+**After filtering**: 34% signal (4.5x improvement)
+
+**Filter rules**:
+1. **Always KEEP**: ERROR, CRITICAL, FATAL, WARN level logs
+2. **Always KEEP**: Logs from protected services (ssh, docker, systemd-logind, etc.)
+3. **DROP**: Logs matching Loki internal operation patterns
+4. **KEEP**: Everything else
+
+### Configuration
+
+```bash
+# In .env
+SHIPPER_FILTER_ENABLED=true   # Enable noise filtering (default: true)
+```
+
+To disable filtering (keep all logs):
+```bash
+SHIPPER_FILTER_ENABLED=false
+```
+
+### Testing the Filter
+
+```bash
+# See what would be filtered from existing data
+python shipper/test_filter.py
+
+# Output shows kept vs dropped counts and sample logs
+```
+
+### Remaining Considerations
+
+Even after filtering, ~19% of kept logs are UFW multicast blocks from the router
+(192.168.1.1 → 224.0.0.1). These could be filtered in the future if needed, but
+were kept for now as they may indicate network scanning attempts.
+
+### LLM Readiness Assessment
+
+| Query Type | Before Filter | After Filter |
+|------------|--------------|--------------|
+| "What errors occurred?" | Poor - buried in noise | Good - errors prominent |
+| "Who logged in?" | Good - SSH logs findable | Good - same |
+| "What services restarted?" | Poor - drowned out | Good - clear signal |
+| "System health summary" | Poor - 90% Loki spam | Usable - 34% signal |
+
+**Recommendation**: Proceed to Phase 2 with filtering enabled. The 34% signal
+density is acceptable for semantic search and LLM analysis
 
 ---
 

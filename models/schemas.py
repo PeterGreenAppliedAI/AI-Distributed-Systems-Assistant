@@ -72,9 +72,10 @@ class LogIngestRequest(BaseModel):
 
 class LogIngestResponse(BaseModel):
     """
-    Response for log ingestion
+    Response for log ingestion (idempotent)
     """
     ingested: int = Field(..., description="Number of logs successfully ingested")
+    duplicates: int = Field(0, description="Number of duplicate logs skipped")
     failed: int = Field(0, description="Number of logs that failed")
     errors: Optional[list[str]] = Field(None, description="Error messages if any")
 
@@ -107,3 +108,26 @@ class InfoResponse(BaseModel):
         description="Project description"
     )
     node: str = Field(..., description="Node this API is running on")
+
+
+class ErrorResponse(BaseModel):
+    """
+    Standardized error response format.
+
+    All API errors return this structure for consistency.
+    Follows API Error Handling Architecture principles.
+    """
+    error_code: str = Field(..., description="Machine-readable error code")
+    message: str = Field(..., description="Human-readable error message")
+    timestamp: datetime = Field(default_factory=datetime.utcnow, description="When error occurred")
+    details: Optional[Dict[str, Any]] = Field(None, description="Additional error context")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "error_code": "VALIDATION_ERROR",
+                "message": "No logs provided in request",
+                "timestamp": "2025-12-23T15:00:00.000000Z",
+                "details": {"field": "logs"}
+            }
+        }

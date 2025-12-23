@@ -1,0 +1,15 @@
+[Unit]
+Description=DevMesh API
+After=network.target
+
+[Service]
+Type=simple
+User=tadeu718
+WorkingDirectory=/home/tadeu718/devmesh-platform
+Environment="PATH=/home/tadeu718/devmesh-platform/venv/bin"
+ExecStart=/home/tadeu718/devmesh-platform/venv/bin/python main.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

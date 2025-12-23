@@ -13,11 +13,19 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Database configuration
+def _get_required_env(key: str, default: str = None) -> str:
+    """Get environment variable, raising error if required and missing."""
+    value = os.getenv(key, default)
+    if value is None:
+        raise RuntimeError(f"Required environment variable {key} is not set")
+    return value
+
+
 DB_CONFIG = {
-    'host': os.getenv('DB_HOST', '10.0.0.18'),
+    'host': os.getenv('DB_HOST', 'localhost'),
     'port': int(os.getenv('DB_PORT', 3306)),
     'user': os.getenv('DB_USER', 'devmesh'),
-    'password': os.getenv('DB_PASSWORD', 'devmesh_pass_2024'),
+    'password': _get_required_env('DB_PASSWORD'),  # No default - must be set
     'database': os.getenv('DB_NAME', 'devmesh'),
     'charset': 'utf8mb4',
     'cursorclass': DictCursor,

@@ -12,9 +12,10 @@ from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 
-from models.schemas import HealthResponse, InfoResponse
+from models.schemas import HealthResponse, InfoResponse, ErrorResponse
 from db.database import test_connection
 from api.routes import router as api_router
+from errors import DevMeshError
 
 # Load environment variables
 load_dotenv()
@@ -63,6 +64,51 @@ app = FastAPI(
 
 # Include API routes
 app.include_router(api_router)
+
+
+# =============================================================================
+# Centralized Error Handling
+# =============================================================================
+
+@app.exception_handler(DevMeshError)
+async def domain_error_handler(request: Request, exc: DevMeshError):
+    """
+    Centralized handler for all domain errors.
+
+    Translates domain errors to HTTP responses with consistent format.
+    This is the single choke point for all error responses.
+    """
+    logger.error(f"Domain error: {exc.error_code} - {exc.message}")
+    if exc.details:
+        logger.error(f"  Details: {exc.details}")
+
+    return JSONResponse(
+        status_code=exc.http_status,
+        content=ErrorResponse(
+            error_code=exc.error_code,
+            message=exc.message,
+            details=exc.details if exc.details else None
+        ).model_dump(mode='json')
+    )
+
+
+@app.exception_handler(Exception)
+async def unexpected_error_handler(request: Request, exc: Exception):
+    """
+    Catch-all handler for unexpected exceptions.
+
+    Logs the full error but returns generic message to client.
+    Prevents leaking internal details.
+    """
+    logger.exception(f"Unexpected error on {request.method} {request.url.path}")
+
+    return JSONResponse(
+        status_code=500,
+        content=ErrorResponse(
+            error_code="INTERNAL_ERROR",
+            message="An unexpected error occurred"
+        ).model_dump(mode='json')
+    )
 
 
 # Request logging middleware
