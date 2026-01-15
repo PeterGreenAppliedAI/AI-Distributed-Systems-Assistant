@@ -112,7 +112,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=$INSTALL_DIR
-Environment="PATH=$INSTALL_DIR/venv/bin"
+Environment="PATH=$INSTALL_DIR/venv/bin:/usr/bin:/bin:/usr/local/bin"
 ExecStart=$INSTALL_DIR/venv/bin/python -u $INSTALL_DIR/shipper/log_shipper_daemon.py
 Restart=always
 RestartSec=10
