@@ -7,21 +7,22 @@ Built with MariaDB, FalkorDB (planned), Loki, Prometheus, and open-source LLMs.
 
 ---
 
-## 🎉 Phase 1 Complete! Real-Time Log Streaming Operational
+## 🎉 Multi-Node Deployment In Progress!
 
-**Status**: ✅ Phase 1 Complete - Real-Time Logging Foundation
-**Date**: November 28, 2025
-**Next**: 24hr burn-in test → Phase 2 (Embeddings & Semantic Search)
+**Status**: ✅ Phase 1 Complete - Multi-Node Deployment Active
+**Date**: January 15, 2026
+**Next**: Complete node deployment → Phase 2 (Embeddings & Semantic Search)
 
 ### What's Working Right Now
 
-- ✅ **Real-time log streaming** from dev-services node to MariaDB
-- ✅ **11,733 logs ingested** (historical + continuous real-time)
-- ✅ **HTTP API** for log ingestion and querying
+- ✅ **Multi-node log streaming** from 3+ nodes to MariaDB
+- ✅ **317,000+ logs ingested** across infrastructure
+- ✅ **HTTP API** for log ingestion and cross-node querying
 - ✅ **No blind spots** - logs stream continuously as they're generated
-- ✅ **Indexed, queryable storage** in MariaDB with microsecond timestamps
-- ✅ **Batch ingestion** with crash recovery and cursor persistence
-- ✅ **Ready to scale** to 9 nodes on 10.0.0.x network
+- ✅ **Indexed, queryable storage** in MariaDB (~100 MB)
+- ✅ **Centralized error handling** with domain error types
+- ✅ **Automated deployment scripts** for new nodes
+- ✅ **Noise filtering** for improved signal-to-noise ratio
 
 ### Quick Start (Phase 1)
 
@@ -171,29 +172,35 @@ Traditional tools (Datadog, Elastic, Grafana) are:
 
 ## Roadmap
 
-### ✅ Phase 1: Logging Foundation (Complete - Nov 28, 2025)
+### ✅ Phase 1: Logging Foundation (Complete)
 
 **Goal**: Real-time log streaming from nodes to queryable storage
 
 **Delivered**:
-- MariaDB `log_events` table with indexes
+- MariaDB `log_events` table with indexes and deduplication
 - FastAPI ingestion and query API
-- Real-time log shipper daemon
-- 11,733 logs ingested from dev-services
+- Real-time log shipper daemon with noise filtering
+- 317,000+ logs ingested across multiple nodes
 - Batch ingestion with crash recovery
-- Comprehensive documentation
+- Centralized error handling architecture
+- Automated deployment scripts
 
-**Next**: 24hr burn-in test, then multi-node deployment
+### 🔄 Phase 1.5: Multi-Node Deployment (In Progress - Jan 2026)
 
-### 🔄 Phase 1.5: Production Hardening (Week of Nov 29, 2025)
+**Goal**: Deploy shipper to all infrastructure nodes
 
-**Goal**: Make Phase 1 production-ready and scalable
+**Completed**:
+- ✅ dev-services (primary)
+- ✅ gpu-node-3060
+- ✅ electrical-estimator
+- ✅ mariadb-vm
+- ✅ teaching
+- ✅ TTL cleanup job (90-day retention)
+- ✅ Deployment automation scripts
 
-- TTL/cleanup job (90-day retention)
-- Prometheus metrics from API (`/metrics`)
-- Grafana dashboard for ingestion monitoring
-- Deploy to remaining 8 nodes (10.0.0.13-19)
-- systemd service setup for all nodes
+**Remaining**:
+- Enable SSH on gpu-node and monitoring-vm
+- Assign 10.0.0.x address to postgres-vm and deploy
 
 ### 📅 Phase 2: Embeddings & Semantic Search (Weeks 2-3)
 
@@ -293,29 +300,26 @@ curl "http://localhost:8000/query/logs?service=loki.service&level=ERROR&start_ti
 
 ---
 
-## Current Metrics (as of Nov 28, 2025)
+## Current Metrics (as of Jan 15, 2026)
 
 ```
-Node: dev-services (10.0.0.20)
-Total logs: 11,733
-Storage: ~5.9 MB (log data) + ~2-4 MB (indexes) ≈ 8-10 MB total
+Active Nodes:
+  dev-services         316,000+ logs  (primary node)
+  gpu-node-3060            700+ logs  (GPU workstation)
+  electrical-estimator      50+ logs  (utility node)
+  mariadb-vm                    -     (accumulating)
+  teaching                      -     (accumulating)
 
-Top services:
-  user@1000.service    10,539 logs  (Loki, user processes)
-  kernel                  751 logs  (kernel messages)
-  session-*.scope         184 logs  (user sessions)
-  cron.service             79 logs  (cron jobs)
+Total logs: 317,000+
+Storage: ~100 MB (data + indexes)
 
-Log levels:
-  INFO     90.2%  (10,585 logs)
-  WARN      6.3%  (742 logs)
-  DEBUG     0.4%  (44 logs)
-  ERROR     0.01% (1 log)
+Pending Deployment:
+  gpu-node          (needs SSH enabled)
+  monitoring-vm     (needs SSH enabled)
+  postgres-vm       (needs 10.0.0.x address)
 ```
 
-**Projected growth** (9 nodes total):
-- Daily: ~50 MB/day
-- 90 days: ~4.5 GB
+**Growth rate**: ~5,000 logs/day per active node
 
 ---
 
@@ -327,14 +331,27 @@ Already deployed and operational. See Quick Start above.
 
 ### Multi-Node Deployment
 
-See [`PHASE1_FOUNDATION.md`](PHASE1_FOUNDATION.md) § Deployment Guide for step-by-step instructions to deploy to additional nodes.
+Deployment scripts are in the `deploy/` directory.
 
-**Summary**:
-1. Copy shipper code to new node
-2. Edit `.env` with unique `NODE_NAME`
-3. Set up systemd service
-4. Start daemon
-5. Verify logs appearing in database with correct `host` field
+**Quick Deploy**:
+```bash
+# Create deployment package
+tar czf /tmp/devmesh-shipper.tar.gz \
+    shipper/log_shipper_daemon.py \
+    shipper/filter_config.py \
+    shipper/filter_config.yaml \
+    deploy/install_shipper.sh
+
+# Copy to target node
+scp /tmp/devmesh-shipper.tar.gz user@node:/tmp/
+
+# On target node:
+cd /tmp && tar xzf devmesh-shipper.tar.gz
+sudo ./deploy/install_shipper.sh NODE_NAME API_HOST
+# Example: sudo ./deploy/install_shipper.sh gpu-node 10.0.0.20
+```
+
+See [`NEXT_STEPS.md`](NEXT_STEPS.md) for detailed deployment instructions and troubleshooting.
 
 ---
 
@@ -384,14 +401,17 @@ LIMIT 10;
 
 ## Documentation
 
+- **[README.md](README.md)** - This file (project overview)
 - **[PHASE1_FOUNDATION.md](PHASE1_FOUNDATION.md)** - Comprehensive Phase 1 documentation
   - Problem statement & design decisions
   - Architecture deep dive
-  - Deployment guide
   - Operations & troubleshooting
-  - Roadmap for Phases 2-4
-
-- **[README.md](README.md)** - This file (project overview)
+- **[NEXT_STEPS.md](NEXT_STEPS.md)** - Multi-node deployment guide
+  - Node-by-node deployment instructions
+  - Troubleshooting common issues
+- **[docs/CODE_REVIEW_PRINCIPLES.md](docs/CODE_REVIEW_PRINCIPLES.md)** - Architecture review
+  - Alignment with AI System Design Principles
+  - Error handling architecture
 
 ---
 
