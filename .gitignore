@@ -43,5 +43,7 @@ daemon.log
 deploy/nodes.conf
 !deploy/nodes.conf.example
 
-# Test files
-test_*.py
+# Ad-hoc test scripts (not in tests/ directory)
+/test_realtime.py
+/test_realtime_v2.py
+/shipper/test_filter.py

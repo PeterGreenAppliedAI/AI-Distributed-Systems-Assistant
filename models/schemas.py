@@ -3,7 +3,7 @@ DevMesh Platform - Pydantic Models
 Data schemas for API requests and responses
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 from enum import Enum
 from pydantic import BaseModel, Field
@@ -21,9 +21,7 @@ class LogLevel(str, Enum):
 
 
 class LogEventCreate(BaseModel):
-    """
-    Schema for creating a log event via POST /ingest/logs
-    """
+    """Schema for creating a log event via POST /ingest/logs"""
     timestamp: datetime = Field(..., description="When the log event occurred (UTC)")
     source: str = Field(..., description="Component or exporter name", max_length=255)
     service: str = Field(..., description="Logical service name", max_length=255)
@@ -31,7 +29,6 @@ class LogEventCreate(BaseModel):
     level: LogLevel = Field(..., description="Log severity level")
     message: str = Field(..., description="Log message content")
 
-    # Optional fields
     trace_id: Optional[str] = Field(None, description="Distributed trace ID", max_length=64)
     span_id: Optional[str] = Field(None, description="Span ID within trace", max_length=32)
     event_type: Optional[str] = Field(None, description="Event type (e.g. http_request, db_error)", max_length=100)
@@ -48,15 +45,13 @@ class LogEventCreate(BaseModel):
                 "level": "INFO",
                 "message": "uploading tables",
                 "event_type": "table_upload",
-                "meta_json": {"index_store": "boltdb-shipper-2020-10-24"}
+                "meta_json": {"index_store": "boltdb-shipper-2020-10-24"},
             }
         }
 
 
 class LogEventResponse(LogEventCreate):
-    """
-    Schema for log event responses (includes database ID)
-    """
+    """Schema for log event responses (includes database ID)"""
     id: int = Field(..., description="Database auto-increment ID")
 
     class Config:
@@ -64,16 +59,16 @@ class LogEventResponse(LogEventCreate):
 
 
 class LogIngestRequest(BaseModel):
-    """
-    Batch log ingestion request
-    """
-    logs: list[LogEventCreate] = Field(..., description="List of log events to ingest")
+    """Batch log ingestion request"""
+    logs: list[LogEventCreate] = Field(
+        ...,
+        description="List of log events to ingest",
+        max_length=10000,  # M5 - prevent unbounded payloads
+    )
 
 
 class LogIngestResponse(BaseModel):
-    """
-    Response for log ingestion (idempotent)
-    """
+    """Response for log ingestion (idempotent)"""
     ingested: int = Field(..., description="Number of logs successfully ingested")
     duplicates: int = Field(0, description="Number of duplicate logs skipped")
     failed: int = Field(0, description="Number of logs that failed")
@@ -81,9 +76,7 @@ class LogIngestResponse(BaseModel):
 
 
 class LogQueryParams(BaseModel):
-    """
-    Query parameters for GET /query/logs
-    """
+    """Query parameters for GET /query/logs"""
     service: Optional[str] = Field(None, description="Filter by service name")
     host: Optional[str] = Field(None, description="Filter by host name")
     level: Optional[LogLevel] = Field(None, description="Filter by log level")
@@ -96,7 +89,10 @@ class LogQueryParams(BaseModel):
 class HealthResponse(BaseModel):
     """Response for /health endpoint"""
     status: str = Field("ok", description="Health status")
-    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Current server time (UTC)")
+    timestamp: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="Current server time (UTC)",
+    )
 
 
 class InfoResponse(BaseModel):
@@ -105,21 +101,19 @@ class InfoResponse(BaseModel):
     version: str = Field("0.1.0", description="API version")
     description: str = Field(
         "AI-Native Observability Platform for Local Infrastructure",
-        description="Project description"
+        description="Project description",
     )
     node: str = Field(..., description="Node this API is running on")
 
 
 class ErrorResponse(BaseModel):
-    """
-    Standardized error response format.
-
-    All API errors return this structure for consistency.
-    Follows API Error Handling Architecture principles.
-    """
+    """Standardized error response format."""
     error_code: str = Field(..., description="Machine-readable error code")
     message: str = Field(..., description="Human-readable error message")
-    timestamp: datetime = Field(default_factory=datetime.utcnow, description="When error occurred")
+    timestamp: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="When error occurred",
+    )
     details: Optional[Dict[str, Any]] = Field(None, description="Additional error context")
 
     class Config:
@@ -128,6 +122,6 @@ class ErrorResponse(BaseModel):
                 "error_code": "VALIDATION_ERROR",
                 "message": "No logs provided in request",
                 "timestamp": "2025-12-23T15:00:00.000000Z",
-                "details": {"field": "logs"}
+                "details": {"field": "logs"},
             }
         }

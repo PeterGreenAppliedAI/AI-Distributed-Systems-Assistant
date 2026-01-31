@@ -8,11 +8,6 @@ Usage:
     python ttl_cleanup.py --days 30          # Custom retention
     python ttl_cleanup.py --dry-run          # Preview without deleting
     python ttl_cleanup.py --batch-size 10000 # Custom batch size
-
-Can be run via:
-    - Manual execution
-    - Cron job (recommended: daily at 3 AM)
-    - Systemd timer
 """
 
 import os
@@ -25,31 +20,27 @@ from pathlib import Path
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import mysql.connector
 from dotenv import load_dotenv
 
 # Load environment from project root
 load_dotenv(Path(__file__).parent.parent / '.env')
 
+# Unified DB driver (M3) - use pymysql via shared helper
+from db.database import get_sync_connection
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
+    datefmt='%Y-%m-%d %H:%M:%S',
 )
 logger = logging.getLogger(__name__)
 
 
 def get_db_connection():
-    """Create database connection from environment variables."""
-    return mysql.connector.connect(
-        host=os.getenv('DB_HOST', '10.0.0.18'),
-        port=int(os.getenv('DB_PORT', 3306)),
-        database=os.getenv('DB_NAME', 'devmesh'),
-        user=os.getenv('DB_USER', 'devmesh'),
-        password=os.getenv('DB_PASSWORD', ''),
-        autocommit=False
-    )
+    """Create database connection using shared helper (M3)."""
+    # B4 - DB_PASSWORD is required by _get_required_env inside get_sync_connection
+    return get_sync_connection()
 
 
 def get_stats(cursor, cutoff_date):
@@ -79,64 +70,51 @@ def get_stats(cursor, cutoff_date):
     size = cursor.fetchone()
 
     return {
-        'total_logs': total[0],
-        'oldest_log': total[1],
-        'newest_log': total[2],
-        'to_delete': to_delete[0],
-        'table_size_mb': size[0] if size else 0
+        'total_logs': total['total_logs'],
+        'oldest_log': total['oldest_log'],
+        'newest_log': total['newest_log'],
+        'to_delete': to_delete['to_delete'],
+        'table_size_mb': size['size_mb'] if size else 0,
     }
 
 
 def delete_old_logs(retention_days=90, batch_size=5000, dry_run=False):
-    """
-    Delete logs older than retention_days.
-
-    Uses batched deletes to avoid long-running transactions and table locks.
-    """
+    """Delete logs older than retention_days using batched deletes."""
     cutoff_date = datetime.now() - timedelta(days=retention_days)
 
-    logger.info(f"TTL Cleanup Started")
-    logger.info(f"  Retention: {retention_days} days")
-    logger.info(f"  Cutoff date: {cutoff_date.strftime('%Y-%m-%d %H:%M:%S')}")
-    logger.info(f"  Batch size: {batch_size}")
-    logger.info(f"  Dry run: {dry_run}")
+    logger.info("TTL Cleanup Started")
+    logger.info("  Retention: %d days", retention_days)
+    logger.info("  Cutoff date: %s", cutoff_date.strftime('%Y-%m-%d %H:%M:%S'))
+    logger.info("  Batch size: %d", batch_size)
+    logger.info("  Dry run: %s", dry_run)
 
     conn = get_db_connection()
     cursor = conn.cursor()
 
     try:
-        # Get pre-cleanup stats
         stats_before = get_stats(cursor, cutoff_date)
-        logger.info(f"")
-        logger.info(f"Current state:")
-        logger.info(f"  Total logs: {stats_before['total_logs']:,}")
-        logger.info(f"  Oldest log: {stats_before['oldest_log']}")
-        logger.info(f"  Newest log: {stats_before['newest_log']}")
-        logger.info(f"  Table size: {stats_before['table_size_mb']} MB")
-        logger.info(f"  Logs to delete: {stats_before['to_delete']:,}")
+        logger.info("Current state:")
+        logger.info("  Total logs: %s", f"{stats_before['total_logs']:,}")
+        logger.info("  Oldest log: %s", stats_before['oldest_log'])
+        logger.info("  Newest log: %s", stats_before['newest_log'])
+        logger.info("  Table size: %s MB", stats_before['table_size_mb'])
+        logger.info("  Logs to delete: %s", f"{stats_before['to_delete']:,}")
 
         if stats_before['to_delete'] == 0:
-            logger.info(f"")
-            logger.info(f"No logs older than {retention_days} days. Nothing to delete.")
+            logger.info("No logs older than %d days. Nothing to delete.", retention_days)
             return {'deleted': 0, 'batches': 0}
 
         if dry_run:
-            logger.info(f"")
-            logger.info(f"DRY RUN - No logs will be deleted")
-            logger.info(f"Would delete {stats_before['to_delete']:,} logs")
+            logger.info("DRY RUN - No logs will be deleted")
+            logger.info("Would delete %s logs", f"{stats_before['to_delete']:,}")
             return {'deleted': 0, 'batches': 0, 'would_delete': stats_before['to_delete']}
 
-        # Perform batched deletes
         total_deleted = 0
         batch_num = 0
-
-        logger.info(f"")
-        logger.info(f"Starting deletion...")
+        logger.info("Starting deletion...")
 
         while True:
             batch_num += 1
-
-            # Delete in batches to avoid long locks
             cursor.execute("""
                 DELETE FROM log_events
                 WHERE timestamp < %s
@@ -150,36 +128,29 @@ def delete_old_logs(retention_days=90, batch_size=5000, dry_run=False):
                 break
 
             total_deleted += deleted_count
-            logger.info(f"  Batch {batch_num}: deleted {deleted_count:,} logs (total: {total_deleted:,})")
+            logger.info("  Batch %d: deleted %s logs (total: %s)",
+                        batch_num, f"{deleted_count:,}", f"{total_deleted:,}")
 
-        # Get post-cleanup stats
         stats_after = get_stats(cursor, cutoff_date)
-
-        logger.info(f"")
-        logger.info(f"Cleanup complete:")
-        logger.info(f"  Total deleted: {total_deleted:,} logs")
-        logger.info(f"  Batches: {batch_num}")
-        logger.info(f"  Remaining logs: {stats_after['total_logs']:,}")
-        logger.info(f"  New oldest log: {stats_after['oldest_log']}")
-        logger.info(f"  Table size: {stats_after['table_size_mb']} MB")
-
-        # Calculate space reclaimed (approximate - actual reclaim needs OPTIMIZE TABLE)
-        space_before = stats_before['table_size_mb'] or 0
-        space_after = stats_after['table_size_mb'] or 0
+        logger.info("Cleanup complete:")
+        logger.info("  Total deleted: %s logs", f"{total_deleted:,}")
+        logger.info("  Batches: %d", batch_num)
+        logger.info("  Remaining logs: %s", f"{stats_after['total_logs']:,}")
+        logger.info("  New oldest log: %s", stats_after['oldest_log'])
+        logger.info("  Table size: %s MB", stats_after['table_size_mb'])
 
         if total_deleted > 0:
-            logger.info(f"")
-            logger.info(f"Note: Run 'OPTIMIZE TABLE log_events' to reclaim disk space")
+            logger.info("Note: Run 'OPTIMIZE TABLE log_events' to reclaim disk space")
 
         return {
             'deleted': total_deleted,
             'batches': batch_num,
-            'remaining': stats_after['total_logs']
+            'remaining': stats_after['total_logs'],
         }
 
     except Exception as e:
         conn.rollback()
-        logger.error(f"Error during cleanup: {e}")
+        logger.error("Error during cleanup: %s", e)
         raise
     finally:
         cursor.close()
@@ -188,25 +159,14 @@ def delete_old_logs(retention_days=90, batch_size=5000, dry_run=False):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='DevMesh TTL Cleanup - Delete old log entries'
+        description='DevMesh TTL Cleanup - Delete old log entries',
     )
-    parser.add_argument(
-        '--days', '-d',
-        type=int,
-        default=90,
-        help='Retention period in days (default: 90)'
-    )
-    parser.add_argument(
-        '--batch-size', '-b',
-        type=int,
-        default=5000,
-        help='Number of rows to delete per batch (default: 5000)'
-    )
-    parser.add_argument(
-        '--dry-run', '-n',
-        action='store_true',
-        help='Preview what would be deleted without actually deleting'
-    )
+    parser.add_argument('--days', '-d', type=int, default=90,
+                        help='Retention period in days (default: 90)')
+    parser.add_argument('--batch-size', '-b', type=int, default=5000,
+                        help='Number of rows to delete per batch (default: 5000)')
+    parser.add_argument('--dry-run', '-n', action='store_true',
+                        help='Preview what would be deleted without actually deleting')
 
     args = parser.parse_args()
 
@@ -214,16 +174,17 @@ def main():
         result = delete_old_logs(
             retention_days=args.days,
             batch_size=args.batch_size,
-            dry_run=args.dry_run
+            dry_run=args.dry_run,
         )
 
         if args.dry_run:
-            logger.info(f"Dry run complete. Would delete {result.get('would_delete', 0):,} logs.")
+            logger.info("Dry run complete. Would delete %s logs.",
+                        f"{result.get('would_delete', 0):,}")
         else:
-            logger.info(f"TTL cleanup finished. Deleted {result['deleted']:,} logs.")
+            logger.info("TTL cleanup finished. Deleted %s logs.", f"{result['deleted']:,}")
 
     except Exception as e:
-        logger.error(f"TTL cleanup failed: {e}")
+        logger.error("TTL cleanup failed: %s", e)
         sys.exit(1)
 
 

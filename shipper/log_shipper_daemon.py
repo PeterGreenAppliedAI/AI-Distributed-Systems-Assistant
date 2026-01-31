@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 DevMesh Platform - Real-Time Log Shipper Daemon
-Continuously streams logs from journald to DevMesh API in real-time
+Continuously streams logs from journald to DevMesh API in real-time.
 
 Includes configurable filtering to improve signal-to-noise ratio for LLM analysis.
 Filter rules are loaded from filter_config.yaml (schema-validated).
@@ -17,7 +17,7 @@ import json
 import subprocess
 import time
 import signal
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 import requests
 from dotenv import load_dotenv
@@ -31,14 +31,19 @@ load_dotenv()
 # Import filter module (DRY - single source of truth)
 from filter_config import FilterConfig, LogFilter
 
+# Shared transforms (M4)
+from transforms import map_priority_to_level, transform_journald_to_log_event
+
 # Configuration
 API_HOST = os.getenv('API_HOST', '127.0.0.1')
 API_PORT = os.getenv('API_PORT', '8000')
 API_BASE_URL = f"http://{API_HOST}:{API_PORT}"
-BATCH_SIZE = int(os.getenv('SHIPPER_BATCH_SIZE', 50))  # Smaller batches for lower latency
+API_KEY = os.getenv('API_KEY', '')  # B1 - optional API key
+BATCH_SIZE = int(os.getenv('SHIPPER_BATCH_SIZE', 50))
 NODE_NAME = os.getenv('NODE_NAME', 'dev-services')
 CURSOR_FILE = os.getenv('SHIPPER_CURSOR_FILE', 'shipper/cursor.txt')
-RETRY_DELAY = 5  # seconds to wait before retrying on failure
+FAILED_BATCHES_FILE = os.getenv('SHIPPER_FAILED_BATCHES_FILE', 'shipper/failed_batches.jsonl')
+RETRY_DELAY = 5
 
 # Global flag for graceful shutdown
 shutdown_requested = False
@@ -59,6 +64,14 @@ def signal_handler(signum, frame):
     global shutdown_requested
     print(f"\n[SIGNAL] Received signal {signum}, shutting down gracefully...")
     shutdown_requested = True
+
+
+def _get_request_headers() -> dict:
+    """Build HTTP headers, including API key if configured (B1)."""
+    headers = {"Content-Type": "application/json"}
+    if API_KEY:
+        headers["X-API-Key"] = API_KEY
+    return headers
 
 
 def save_cursor(cursor: str):
@@ -85,67 +98,62 @@ def load_cursor() -> Optional[str]:
     return None
 
 
-def map_priority_to_level(priority: str) -> str:
-    """Map journald priority to DevMesh log level"""
-    priority_map = {
-        '0': 'FATAL',
-        '1': 'CRITICAL',
-        '2': 'CRITICAL',
-        '3': 'ERROR',
-        '4': 'WARN',
-        '5': 'INFO',
-        '6': 'INFO',
-        '7': 'DEBUG'
-    }
-    return priority_map.get(str(priority), 'INFO')
+def _spool_failed_batch(logs: List[Dict[str, Any]]):
+    """Write failed batch to dead-letter spool file (H3)."""
+    try:
+        os.makedirs(os.path.dirname(FAILED_BATCHES_FILE) or '.', exist_ok=True)
+        with open(FAILED_BATCHES_FILE, 'a') as f:
+            f.write(json.dumps({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "count": len(logs),
+                "logs": logs,
+            }) + '\n')
+        print(f"[SPOOL] Wrote {len(logs)} logs to dead-letter spool")
+    except Exception as e:
+        print(f"[ERROR] Failed to write dead-letter spool: {e}")
 
 
-def transform_journald_to_log_event(entry: Dict[str, Any]) -> Dict[str, Any]:
-    """Transform journald entry to DevMesh log_events schema"""
-    # Extract timestamp (microseconds since epoch)
-    timestamp_us = int(entry.get('__REALTIME_TIMESTAMP', '0'))
-    timestamp = datetime.utcfromtimestamp(timestamp_us / 1_000_000)
+def _replay_spooled_batches():
+    """On startup, attempt to re-ingest any spooled failed batches (H3)."""
+    if not os.path.exists(FAILED_BATCHES_FILE):
+        return
 
-    # Get service/unit name
-    service = entry.get('_SYSTEMD_UNIT', entry.get('SYSLOG_IDENTIFIER', 'unknown'))
+    print("[INFO] Found failed_batches.jsonl, attempting re-ingestion...")
+    remaining = []
+    replayed = 0
 
-    # Get message
-    message = entry.get('MESSAGE', '')
+    try:
+        with open(FAILED_BATCHES_FILE, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    batch_record = json.loads(line)
+                    logs = batch_record.get('logs', [])
+                    if ingest_batch(logs):
+                        replayed += len(logs)
+                    else:
+                        remaining.append(line)
+                except (json.JSONDecodeError, Exception) as e:
+                    print(f"[WARN] Failed to replay spool entry: {e}")
+                    remaining.append(line)
 
-    # Get priority and map to level
-    priority = entry.get('PRIORITY', '6')
-    level = map_priority_to_level(priority)
+        # Rewrite file with only remaining failures
+        if remaining:
+            with open(FAILED_BATCHES_FILE, 'w') as f:
+                f.write('\n'.join(remaining) + '\n')
+        else:
+            os.remove(FAILED_BATCHES_FILE)
 
-    # Build log event
-    log_event = {
-        'timestamp': timestamp.isoformat() + 'Z',
-        'source': 'journald',
-        'service': service,
-        'host': NODE_NAME,
-        'level': level,
-        'message': message,
-    }
-
-    # Add optional metadata
-    meta_json = {}
-    if '_PID' in entry:
-        meta_json['pid'] = entry['_PID']
-    if '_COMM' in entry:
-        meta_json['comm'] = entry['_COMM']
-    if 'SYSLOG_FACILITY' in entry:
-        meta_json['facility'] = entry['SYSLOG_FACILITY']
-
-    if meta_json:
-        log_event['meta_json'] = meta_json
-
-    return log_event
+        if replayed:
+            print(f"[INFO] Replayed {replayed} spooled logs successfully")
+    except Exception as e:
+        print(f"[WARN] Error replaying spooled batches: {e}")
 
 
 def ingest_batch(logs: List[Dict[str, Any]]) -> bool:
-    """
-    Send batch of logs to DevMesh API.
-    Returns True if successful, False otherwise.
-    """
+    """Send batch of logs to DevMesh API. Returns True if successful."""
     if not logs:
         return True
 
@@ -153,7 +161,7 @@ def ingest_batch(logs: List[Dict[str, Any]]) -> bool:
     payload = {"logs": logs}
 
     try:
-        response = requests.post(url, json=payload, timeout=10)
+        response = requests.post(url, json=payload, headers=_get_request_headers(), timeout=10)
         response.raise_for_status()
         result = response.json()
 
@@ -171,53 +179,42 @@ def ingest_batch(logs: List[Dict[str, Any]]) -> bool:
 
 
 def follow_journald():
-    """
-    Follow journald in real-time and stream logs to DevMesh API.
-
-    Uses journalctl -f to continuously tail new log entries.
-    """
+    """Follow journald in real-time and stream logs to DevMesh API."""
     global shutdown_requested
 
-    # Load saved cursor if exists
     cursor = load_cursor()
 
-    # Build journalctl command
     cmd = [
         'journalctl',
         '--output=json',
         '--follow',
-        '--no-pager'
+        '--no-pager',
     ]
 
-    # If we have a saved cursor, resume from there
     if cursor:
         cmd.extend(['--after-cursor', cursor])
     else:
-        # Otherwise, start from now (don't re-ingest old logs)
         cmd.extend(['--since', 'now'])
 
     print(f"[INFO] Starting journald follow...")
     print(f"[INFO] Command: {' '.join(cmd)}")
 
     try:
-        # Start journalctl subprocess
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            bufsize=1  # Line buffered
+            bufsize=1,
         )
 
         batch = []
         last_cursor = None
-        cursor_save_interval = 100  # Save cursor every N logs
         log_count = 0
 
         print(f"[INFO] Streaming logs in real-time (batch size: {BATCH_SIZE})...")
         print("-" * 80)
 
-        # Read logs line by line as they come in
         for line in iter(process.stdout.readline, ''):
             if shutdown_requested:
                 print("[INFO] Shutdown requested, stopping log stream...")
@@ -227,53 +224,50 @@ def follow_journald():
                 continue
 
             try:
-                # Parse JSON log entry
                 entry = json.loads(line)
 
-                # Update cursor
                 if '__CURSOR' in entry:
                     last_cursor = entry['__CURSOR']
 
-                # Transform to DevMesh schema
-                log_event = transform_journald_to_log_event(entry)
+                # Use shared transform (M4)
+                log_event = transform_journald_to_log_event(entry, NODE_NAME)
 
-                # Apply filtering (using shared filter module)
+                # Apply filtering
                 if log_filter is not None:
                     keep, drop_reason = log_filter.filter_log(log_event)
                     if not keep:
-                        # Skip this log - don't add to batch
                         continue
 
                 batch.append(log_event)
                 log_count += 1
 
-                # Print progress (every 10th log to reduce noise)
                 if log_count % 10 == 0:
                     service = log_event['service']
                     level = log_event['level']
                     message = log_event['message'][:50]
                     print(f"[{log_count:6}] [{level:8}] {service:25} | {message}", flush=True)
 
-                # Send batch when full (for efficiency)
+                # Send batch when full
                 if len(batch) >= BATCH_SIZE:
                     print(f"[BATCH] Sending {len(batch)} logs to API...", flush=True)
                     success = ingest_batch(batch)
 
                     if success:
-                        print(f"[BATCH] ✓ Ingested {len(batch)} logs", flush=True)
+                        print(f"[BATCH] Ingested {len(batch)} logs", flush=True)
                         batch = []
-                        # Save cursor periodically
-                        if last_cursor and log_count % cursor_save_interval == 0:
+                        # M1 - save cursor after each successful batch
+                        if last_cursor:
                             save_cursor(last_cursor)
                     else:
-                        # If ingestion failed, wait and retry
                         print(f"[RETRY] Waiting {RETRY_DELAY}s before retry...")
                         time.sleep(RETRY_DELAY)
-                        # Try again
                         if ingest_batch(batch):
                             batch = []
+                            if last_cursor:
+                                save_cursor(last_cursor)
                         else:
-                            print("[ERROR] Retry failed, discarding batch to avoid blocking")
+                            # H3 - spool to dead-letter instead of discarding
+                            _spool_failed_batch(batch)
                             batch = []
 
             except json.JSONDecodeError as e:
@@ -283,12 +277,12 @@ def follow_journald():
                 print(f"[ERROR] Error processing log entry: {e}")
                 continue
 
-        # Send any remaining logs in batch
+        # Send remaining logs
         if batch:
             print(f"[INFO] Sending final batch of {len(batch)} logs...")
-            ingest_batch(batch)
+            if not ingest_batch(batch):
+                _spool_failed_batch(batch)
 
-        # Save final cursor
         if last_cursor:
             save_cursor(last_cursor)
 
@@ -312,10 +306,10 @@ def check_api_health():
     try:
         response = requests.get(f"{API_BASE_URL}/health", timeout=5)
         response.raise_for_status()
-        print(f"[INFO] ✓ DevMesh API is healthy")
+        print(f"[INFO] DevMesh API is healthy")
         return True
     except Exception as e:
-        print(f"[ERROR] ✗ DevMesh API not reachable: {e}")
+        print(f"[ERROR] DevMesh API not reachable: {e}")
         return False
 
 
@@ -323,7 +317,6 @@ def main():
     """Main daemon entry point"""
     global shutdown_requested
 
-    # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
@@ -332,6 +325,7 @@ def main():
     print("=" * 80)
     print(f"Node: {NODE_NAME}")
     print(f"API: {API_BASE_URL}")
+    print(f"API Auth: {'key configured' if API_KEY else 'none'}")
     print(f"Batch size: {BATCH_SIZE}")
     print(f"Cursor file: {CURSOR_FILE}")
     if log_filter is not None and filter_config is not None:
@@ -343,13 +337,14 @@ def main():
         print(f"Filtering: DISABLED")
     print("=" * 80)
 
-    # Check API health before starting
     if not check_api_health():
         print("[ERROR] Cannot start - DevMesh API is not available")
         print(f"[INFO] Make sure the API is running: cd /home/tadeu718/devmesh-platform && python main.py")
         sys.exit(1)
 
-    # Start streaming
+    # H3 - replay any spooled failed batches from previous runs
+    _replay_spooled_batches()
+
     while not shutdown_requested:
         try:
             follow_journald()

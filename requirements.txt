@@ -8,13 +8,15 @@ pydantic-settings==2.1.0
 
 # Database
 pymysql==1.1.0
-sqlalchemy==2.0.25
+aiomysql==0.2.0
 
 # Utilities
 python-dotenv==1.0.0
 python-dateutil==2.8.2
 requests==2.31.0
+pyyaml>=6.0
 
-# Development
+# Development & Testing
 pytest==7.4.4
-httpx==0.26.0  # For testing API
+pytest-asyncio==0.23.3
+httpx==0.26.0
