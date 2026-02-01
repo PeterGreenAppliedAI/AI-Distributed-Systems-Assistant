@@ -9,6 +9,7 @@ import logging
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
@@ -59,12 +60,19 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error("Failed to initialise DB pool: %s", e)
 
+    # Create shared httpx client for embedding service
+    embedding_timeout = int(os.getenv('EMBEDDING_TIMEOUT', '120'))
+    app.state.http_client = httpx.AsyncClient(timeout=embedding_timeout)
+    logger.info("HTTP client initialised (timeout=%ds)", embedding_timeout)
+
     logger.info("API running on http://%s:%s",
                 os.getenv('API_HOST', '0.0.0.0'), os.getenv('API_PORT', 8000))
 
     yield
 
     # Shutdown
+    await app.state.http_client.aclose()
+    logger.info("HTTP client closed")
     await close_pool()
     logger.info("DevMesh Platform shut down")
 

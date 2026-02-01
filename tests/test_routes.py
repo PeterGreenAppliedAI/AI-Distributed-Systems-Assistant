@@ -19,9 +19,10 @@ async def client():
 
     with patch("db.database._pool", mock_pool), \
          patch("db.database.get_pool", return_value=mock_pool):
-        # Reset cached schema check
+        # Reset cached schema checks
         import api.routes
         api.routes._has_hash_column = None
+        api.routes._has_embedding_column = None
 
         from main import app
         transport = ASGITransport(app=app)

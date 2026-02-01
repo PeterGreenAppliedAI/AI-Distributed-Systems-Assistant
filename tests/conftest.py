@@ -42,6 +42,8 @@ class MockCursor:
             self.results = [{"1": 1}]
         elif "SELECT COUNT" in sql and "log_hash" in sql:
             self.results = [{"cnt": 1}]
+        elif "SELECT COUNT" in sql and "embedding_vector" in sql:
+            self.results = [{"cnt": 0}]
         elif "SELECT" in sql and "FROM log_events" in sql:
             # Query endpoint - return empty list (no rows)
             self.results = []

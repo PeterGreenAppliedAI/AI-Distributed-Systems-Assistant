@@ -1,8 +1,8 @@
-# AI Distributed Systems Assistant — Architecture
+# DevMesh Platform — Architecture
 
 ## Goals
 
-- Local-first assistant for distributed systems (clusters, services, nodes)
+- Local-first observability for distributed systems (clusters, services, nodes)
 - Correlate **logs**, **metrics**, and **topology** into a shared knowledge graph
 - Use **GraphRAG + multi-agent workflows** to:
   - Explain incidents
@@ -14,131 +14,128 @@
 ### 1. API / Orchestration (FastAPI)
 
 - Hosts HTTP endpoints for:
-  - Queries (`/query`)
-  - Health checks (`/health`)
-  - Admin / ingestion endpoints (planned)
-- Orchestrates:
-  - Agent calls
-  - Retrieval over GraphRAG
-  - LLM calls for extraction / reasoning
+  - Ingestion (`POST /ingest/logs`)
+  - Query (`GET /query/logs`)
+  - Semantic search (`GET /search/logs`)
+  - Health checks (`GET /health`, `GET /info`)
+- Manages shared `httpx.AsyncClient` for embedding gateway calls
+- Centralized error handling with domain error types
 
-### 2. Storage & Knowledge
+### 2. LLM Gateway (Ollama)
 
-#### MariaDB (with vector)
+- **Host**: `192.168.1.184:8001` (DGX Spark)
+- **Embedding model**: `qwen3-embedding:8b` (4096 dimensions)
+- **Endpoints used**:
+  - `/v1/embeddings` — OpenAI-compatible batch endpoint (primary, ~50 texts in 2.4s)
+  - `/api/embeddings` — Ollama native single-text endpoint (fallback)
+- **Also available**: phi4, mistral:7b-instruct, qwen2.5:7b, qwen2.5-coder:32b, qwen3:14b, qwen2.5:72b
+- Config via env: `GATEWAY_URL`, `EMBEDDING_MODEL`, `EMBEDDING_TIMEOUT`
 
-- Tables (planned):
-  - `documents` — raw docs, runbooks, descriptions
-  - `chunks` — text chunks with metadata
-  - `embeddings` — vector column for chunks
-  - `incidents` — incident metadata
-  - `metrics_snapshots` — serialized metrics
+### 3. Storage & Knowledge
 
-- Used for:
-  - Semantic retrieval
-  - Hybrid search with Neo4j neighborhoods
+#### MariaDB 12.0.2 (Primary Store)
 
-#### Neo4j
+- **Host**: `10.0.0.18`
+- **Table**: `log_events`
+  - `id` BIGINT PK
+  - `log_hash` VARCHAR(16) — SHA256 truncated, for deduplication
+  - `timestamp` DATETIME(6) — microsecond precision
+  - `source`, `service`, `host`, `level`, `message` — core fields
+  - `trace_id`, `span_id`, `event_type`, `error_code` — correlation
+  - `meta_json` JSON — flexible metadata
+  - `embedding_vector` VECTOR(4096) — nullable, qwen3-embedding:8b
+- **Indexes**: timestamp, service, host, level, compound indexes, unique on log_hash
+- **Vector search**: `VEC_DISTANCE_COSINE()` with `VEC_FromText()` for input
+- **HNSW vector index**: pending (requires NOT NULL, created after backfill)
 
-- Nodes:
-  - `Service`
-  - `Node`
-  - `Pod` (optional)
-  - `Incident`
-  - `LogSnippet`
-  - `MetricSnapshot`
-  - `Runbook`
-  - `Recommendation`
+#### FalkorDB (Planned — Phase 4)
 
-- Relationships (examples):
-  - `(:Incident)-[:AFFECTS]->(:Service)`
-  - `(:Incident)-[:OBSERVED_ON]->(:Node)`
-  - `(:Incident)-[:HAS_LOG]->(:LogSnippet)`
-  - `(:Incident)-[:HAS_METRIC]->(:MetricSnapshot)`
-  - `(:Service)-[:RUNS_ON]->(:Node)`
-  - `(:Incident)-[:RELATED_RUNBOOK]->(:Runbook)`
+- Nodes: `Service`, `Node`, `Incident`, `LogSnippet`, `MetricSnapshot`, `Runbook`
+- Relationships: `AFFECTS`, `OBSERVED_ON`, `HAS_LOG`, `RUNS_ON`, `RELATED_RUNBOOK`
+- Provides graph topology and relationship context for GraphRAG
 
-Neo4j provides the **graph topology** and relationship context that GraphRAG uses.
+### 4. Log Shipper
 
-### 3. Observability Stack
+- Custom Python daemon per node, tails journald in real-time
+- Batches logs (50 per batch), sends via `POST /ingest/logs`
+- Cursor-based recovery on restart
+- Noise filtering via configurable rules
+- Deployed as systemd service on 7 nodes
 
-- **Loki** — log ingestion / querying
-- **Prometheus** — metrics scraping
-- **Grafana** — dashboards for:
-  - system health
-  - incident timelines
-  - assistant activity (later)
+### 5. Embedding Pipeline
 
-The assistant consumes data exposed by Loki/Prometheus and writes structured summaries into Neo4j + MariaDB.
+#### Live Ingestion Path
+- New logs arrive via `POST /ingest/logs`
+- If `embedding_vector` column exists, API calls gateway `/v1/embeddings` in batch
+- Embeddings stored inline with INSERT (as `VEC_FromText()` text)
+- Failures graceful — logs inserted with NULL embedding
 
-### 4. Models / LLM Layer
+#### Backfill Script (`scripts/backfill_embeddings.py`)
+- Processes existing rows with NULL `embedding_vector`
+- ID-based cursor for efficient resumption (avoids full table scan)
+- Batch gateway calls via `/v1/embeddings`
+- Configurable `--batch-size` and `--delay` (thermal management)
+- Idempotent — safe to stop/resume
 
-- **Embedding model**
-  - Embeds text chunks (logs, runbooks, explanations)
-  - Embeds queries and incident descriptions
+### 6. Models / LLM Layer
 
-- **Reasoning / retrieval model**
-  - Performs:
-    - query rewriting
-    - entity/relationship extraction
-    - Cypher + SQL template generation
-    - explanation synthesis
+- **Embedding model**: qwen3-embedding:8b (4096 dims, running on DGX Spark)
+- **Reasoning / retrieval model** (planned): Phi 4 for orchestration, larger model for synthesis
+- **Optional reranker** (planned): for retrieved chunk quality
+- All models open-source and locally hosted
 
-- **Optional reranker**
-  - Reranks retrieved chunks / graph neighborhoods
-  - Helps improve context selection
+### 7. Agents (Planned — Phase 4)
 
-All models are intended to be **open-source and locally hosted** (Nemotron family is a strong candidate).
+- **Planner Agent** — routes to specialist agents
+- **Log Agent** — queries logs, detects patterns, creates Incident nodes
+- **Topology Agent** — maintains service/node graph from cluster APIs
+- **Explainer Agent** — GraphRAG retrieval + natural language explanations
+- **Runbook Agent** — ingests docs, links incidents to runbooks
 
-### 5. Agents
+### 8. GraphRAG Strategy (Planned)
 
-Initial agents:
+- Retrieve **graph neighborhood** in FalkorDB (incident → services → logs → metrics)
+- Retrieve **semantic neighbors** in MariaDB (vector similarity search)
+- Merge + rerank context, provide to LLM for answering
 
-- **Planner Agent**
-  - Decides which specialist agent(s) to invoke:
-    - Log Agent
-    - Topology Agent
-    - Explainer Agent
-    - Runbook Agent
+## Data Flow
 
-- **Log Agent**
-  - Queries Loki
-  - Detects patterns / anomalies in logs
-  - Creates/updates `Incident` + `LogSnippet` nodes
-  - Attaches `MetricSnapshot` references where relevant
+```
+┌─────────────────┐
+│  7 Linux Nodes  │
+│  (journald)     │
+└────────┬────────┘
+         │ Real-time JSON stream
+         ↓
+┌─────────────────────────────────┐
+│  Log Shipper Daemon (per node)  │
+│  - Tails journald with -f      │
+│  - Batches logs (50/batch)     │
+│  - Noise filtering             │
+└────────┬────────────────────────┘
+         │ POST /ingest/logs
+         ↓
+┌─────────────────────────────────┐      ┌──────────────────────────┐
+│  DevMesh API (FastAPI)          │─────→│  LLM Gateway (Ollama)    │
+│  - POST /ingest/logs            │      │  192.168.1.184:8001      │
+│  - GET  /query/logs             │←─────│  qwen3-embedding:8b      │
+│  - GET  /search/logs            │      │  (4096-dim vectors)      │
+└────────┬────────────────────────┘      └──────────────────────────┘
+         │ SQL INSERT (with embedding)
+         ↓
+┌─────────────────────────────────┐
+│  MariaDB 12.0.2 (10.0.0.18)    │
+│  Table: log_events              │
+│  - 519K+ rows, 7 nodes         │
+│  - VECTOR(4096) embeddings      │
+│  - VEC_DISTANCE_COSINE search   │
+└─────────────────────────────────┘
+```
 
-- **Topology Agent**
-  - Ingests cluster/service topology from external sources (K8s API, static config, etc.)
-  - Maintains `Service`, `Node`, `Pod` nodes and edges
+## Roadmap
 
-- **Explainer Agent**
-  - Uses GraphRAG to fetch:
-    - incident details
-    - affected services/nodes
-    - relevant runbooks / docs
-  - Generates natural language explanations and recommendations
-
-- **Runbook Agent**
-  - Ingests runbooks / documentation into MariaDB + Neo4j
-  - Links `Incident` nodes to `Runbook` nodes
-
-### 6. GraphRAG Strategy
-
-- Retrieve relevant **graph neighborhood** in Neo4j:
-  - start at `Incident` or `Service`
-  - expand to related nodes (logs, metrics, runbooks)
-- Retrieve **semantic neighbors** in MariaDB (vector search):
-  - log text
-  - doc sections
-  - prior incident descriptions
-- Merge + rerank context, then provide to LLM for answering.
-
-## Roadmap (Architecture)
-
-1. Minimal stack with:
-   - FastAPI healthcheck
-   - MariaDB + Neo4j + Loki + Prometheus + Grafana via `docker-compose`
-2. Basic Neo4j schema & sample data
-3. Simple GraphRAG endpoint for querying sample incidents
-4. Loki integration + Log Agent creating `Incident` nodes
-5. Metrics integration + `MetricSnapshot` nodes
-6. Multi-agent orchestration with Planner + Explainer agents
+1. ~~Phase 1: Logging foundation~~ (complete)
+2. **Phase 2: Embeddings & semantic search** (active)
+   - Canonicalization & template dedup pipeline (next)
+3. Phase 3: Retrieval & LLM reasoning
+4. Phase 4: Knowledge graph & multi-agent system

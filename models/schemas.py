@@ -58,6 +58,11 @@ class LogEventResponse(LogEventCreate):
         from_attributes = True
 
 
+class LogSearchResult(LogEventResponse):
+    """Schema for semantic search results (includes similarity score)"""
+    similarity_score: float = Field(..., description="Cosine similarity score (0-1, higher is more similar)")
+
+
 class LogIngestRequest(BaseModel):
     """Batch log ingestion request"""
     logs: list[LogEventCreate] = Field(

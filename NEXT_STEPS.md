@@ -1,219 +1,184 @@
 # DevMesh Platform - Next Steps
 
-**Last Updated**: December 23, 2025
-
-This document outlines the remaining tasks to complete the multi-node deployment.
+**Last Updated**: February 2026
 
 ---
 
 ## Current Status
 
-### Completed
-- [x] Phase 1 log collection running on dev-services
-- [x] 203,017 logs accumulated (~26 days of data)
-- [x] API and shipper services stable
-- [x] Deployment scripts created (`deploy/`)
-- [x] Error handling architecture implemented
-- [x] Code review against design principles completed
+### Phase 1: Logging Foundation — Complete
+- [x] Real-time log collection from 7 nodes via journald shippers
+- [x] 519K+ logs in MariaDB with deduplication
+- [x] FastAPI ingestion and query API
+- [x] Noise filtering, cursor-based recovery
+- [x] Centralized error handling architecture
+- [x] Automated deployment scripts
 
-### Pending
-- [ ] Deploy shipper to 7 additional nodes
-- [ ] Set up SSH key-based access for automation
-- [ ] Enable SSH on gpu-node and monitoring-vm
+### Phase 1.5: Multi-Node Deployment — Mostly Complete
+
+| Node | IP | Shipper | Logs |
+|------|-----|---------|------|
+| dev-services | 10.0.0.20 | Running | 382K+ |
+| gpu-node | 10.0.0.19 | Running | 47K+ |
+| gpu-node-3060 | 10.0.0.14 | Running | 40K+ |
+| electrical-estimator | 10.0.0.13 | Running | 16K+ |
+| teaching | 192.168.1.227 | Running | 14K+ |
+| mariadb-vm | 10.0.0.18 | Running | 14K+ |
+| postgres-vm | 192.168.1.220 | Running | 3K+ |
+| monitoring-vm | 10.0.0.17 | **Pending** | — |
+
+**Remaining**: Enable SSH on monitoring-vm and deploy shipper.
+
+### Phase 2: Embeddings & Semantic Search — In Progress
+
+- [x] `embedding_vector VECTOR(4096)` column added to `log_events`
+- [x] Embedding service (`services/embedding.py`) with batch `/v1/embeddings` support
+- [x] Live ingestion embeds new logs inline
+- [x] Semantic search endpoint (`GET /search/logs`) with `VEC_DISTANCE_COSINE()`
+- [x] Backfill script with ID-based cursor and thermal delay
+- [x] Gateway config in `.env` (`GATEWAY_URL`, `EMBEDDING_MODEL`, `EMBEDDING_TIMEOUT`)
+- [ ] Initial backfill of ~519K rows (in progress, ~55% done)
+- [ ] HNSW vector index (after backfill completes, requires NOT NULL)
+- [ ] Embedding versioning schema (HIGH — needed before canonicalization)
+- [ ] Log canonicalization pipeline
+- [ ] Template deduplication
+- [ ] Cron safety net for missed embeddings
 
 ---
 
-## Node Deployment Status
+## Immediate TODO (Phase 2 Completion)
 
-| Node | IP | SSH Status | Shipper Status |
-|------|-----|------------|----------------|
-| dev-services | 10.0.0.20 | N/A | **Running** |
-| gpu-node | 10.0.0.19 | Blocked | Pending |
-| mariadb-vm | 10.0.0.18 | Open (needs key) | Pending |
-| monitoring-vm | 10.0.0.17 | Blocked | Pending |
-| gpu-node-3060 | 10.0.0.14 | Open (needs key) | Pending |
-| electrical-estimator | 10.0.0.13 | Open (needs key) | Pending |
-| postgres-vm | 192.168.1.220 | Open (needs key) | Pending |
-| teaching | 192.168.1.227 | Open (needs key) | Pending |
+### 1. Finish Backfill
+Backfill is running via `scripts/backfill_embeddings.py --batch-size 50 --delay 2`.
+Once complete, create the HNSW index:
+```bash
+python3 db/migrations/002_add_embedding_vector.py --create-index
+```
+
+### 2. Cron Safety Net
+Add cron job to catch logs where live embedding failed:
+```
+0 */6 * * * cd /home/tadeu718/devmesh-platform && python3 scripts/backfill_embeddings.py --batch-size 50 --delay 2 >> /var/log/devmesh-backfill.log 2>&1
+```
+
+### 3. Embedding Versioning Schema (HIGH PRIORITY — do this first)
+Unversioned embeddings are the real cost. Without versioning, every pipeline change
+(new model, new canonicalization rules, new chunking) means a painful full reprocess
+with no way to A/B compare or incrementally migrate.
+
+Add to the semantic layer table (or directly to `log_events`):
+- `embedding_model` — exact model name (e.g. `qwen3-embedding:8b`)
+- `embedding_dim` — vector dimensions (e.g. 4096)
+- `canon_version` — canonicalization ruleset version (e.g. `v1`)
+- `canon_hash` — hash of the canonicalized text (detect when text actually changed)
+- `chunk_version` — chunking strategy version
+- `created_at` — when this embedding was generated
+
+This makes re-embedding routine:
+- Only re-embed when `canon_hash` changes or model/version is bumped
+- Old embeddings stay for comparison until explicitly dropped
+- Backfill script can target specific versions: `WHERE canon_version < 'v2'`
+
+**This must be in the schema before canonicalization work begins.**
+
+### 4. Log Canonicalization (HIGH PRIORITY)
+Raw systemd logs contain high-entropy tokens that destroy similarity clustering.
+Build a canonicalization pipeline before re-embedding:
+- `pid=1234` -> `pid=<PID>`
+- IPs -> `<IPV4>` / `<IPV6>`
+- Hex / hashes / UUIDs -> `<HEX>` / `<UUID>`
+- User-specific paths -> `/home/<USER>/...`
+- Strip timestamps embedded in message text
+- Collapse whitespace
+
+**Expected impact**: much better nearest-neighbor recall, fewer false uniques.
+
+**Before building rules**: sample 200+ raw log lines, run canonicalizer, count uniques
+before/after to measure actual compression ratio. Don't guess — measure.
+
+### 5. Template Deduplication (HIGH PRIORITY)
+519K logs likely compress to 50-150K unique message templates (measure this).
+- Compute `template_hash = hash(canonical_message + service + level)`
+- Only embed unique templates, store frequency + last_seen
+- **Expected savings**: needs measurement, estimate 3-10x
+
+### 6. Semantic Layer Table (after canonicalization proves out)
+Separate table for deduplicated canonical text:
+- `template_hash`, `canonical_text`, `embedding_vector`
+- `embedding_model`, `embedding_dim`, `canon_version`, `canon_hash`, `chunk_version`
+- `first_seen`, `last_seen`, `frequency`, `created_at`
+- Raw `log_events` stays as audit/source-of-truth
+- Search hits semantic layer, joins back to raw logs for context
 
 ---
 
-## Deployment Instructions
+## Backfill Performance Observations
 
-### Prerequisites for Each Node
+- **Gateway throughput**: 50 texts in 2.4s via `/v1/embeddings` batch endpoint
+- **Sequential `/api/embeddings`**: ~3.2s per text — 30x slower, avoid for bulk
+- **DB bottleneck**: `WHERE embedding_vector IS NULL ORDER BY id` degrades to 17s full table scan as embedded rows increase; fixed with ID-based cursor tracking
+- **Thermal behavior** (DGX Spark GB10):
+  - No delay: 19 rows/s, GPU hit 80C
+  - 2s inter-batch delay: 11 rows/s, GPU capped at ~70C
+  - DGX Spark at 49C with low throughput = DB bottleneck, not thermal throttle
 
-1. **Linux with systemd** (journald for log source)
-2. **Python 3.8+** with pip
-3. **Network access** to DevMesh API:
-   - 10.0.0.x nodes → `http://10.0.0.20:8000`
-   - 192.168.x nodes → `http://192.168.1.184:8000`
+---
 
-### Option A: Automated Deployment (Requires SSH Keys)
+## Phase 3: Retrieval & LLM Reasoning
 
-#### 1. Generate SSH key on dev-services
+**Goal**: "Explain what happened during this incident"
+
+- Vector + time-based retrieval pipeline
+- LLM integration (Phi 4 for orchestration, larger model for synthesis)
+- Context assembly: semantic search results + time window expansion
+- Explanation API endpoint
+- **Exit criteria**: Natural language explanations of log patterns
+
+---
+
+## Phase 4: Knowledge Graph & Agents
+
+**Goal**: Multi-agent incident analysis with knowledge graph
+
+- FalkorDB deployment
+- Graph schema (`Service`, `Node`, `Incident`, `Error`)
+- Graph projection ETL (logs -> graph)
+- Multi-agent system (Planner, Log Analyst, Explainer, Runbook, Operator)
+- GraphRAG: hybrid vector similarity + graph neighborhood retrieval
+- Operator console (Streamlit or web UI)
+- **Exit criteria**: Agents can correlate incidents across services
+
+---
+
+## Deployment Reference
+
+### Deploy Shipper to a New Node
 ```bash
-ssh-keygen -t ed25519 -f ~/.ssh/devmesh_deploy -N ""
-```
-
-#### 2. Copy public key to each node
-```bash
-# For nodes with tadeu718 user
-ssh-copy-id -i ~/.ssh/devmesh_deploy.pub tadeu718@10.0.0.14
-ssh-copy-id -i ~/.ssh/devmesh_deploy.pub tadeu718@192.168.1.227
-
-# For nodes with root user
-ssh-copy-id -i ~/.ssh/devmesh_deploy.pub root@10.0.0.18
-ssh-copy-id -i ~/.ssh/devmesh_deploy.pub root@10.0.0.13
-ssh-copy-id -i ~/.ssh/devmesh_deploy.pub root@192.168.1.220
-```
-
-#### 3. Deploy using scripts
-```bash
-cd /home/tadeu718/devmesh-platform/deploy
-
-# Deploy to single node
-./deploy_to_node.sh gpu-node-3060
-
-# Or deploy to all configured nodes
-./deploy_all.sh
-
-# Check status across all nodes
-./check_status.sh
-```
-
-### Option B: Manual Deployment (No SSH Keys)
-
-#### 1. Create deployment package on dev-services
-```bash
+# Create package
 cd /home/tadeu718/devmesh-platform
 tar czf /tmp/devmesh-shipper.tar.gz \
     shipper/log_shipper_daemon.py \
     shipper/filter_config.py \
     shipper/filter_config.yaml \
     deploy/install_shipper.sh
-```
 
-#### 2. Copy to target node (will prompt for password)
-```bash
+# Copy and install on target
 scp /tmp/devmesh-shipper.tar.gz user@NODE_IP:/tmp/
+ssh user@NODE_IP "cd /tmp && tar xzf devmesh-shipper.tar.gz && sudo ./deploy/install_shipper.sh NODE_NAME API_HOST"
 ```
 
-#### 3. SSH to target node and install
+### Troubleshooting
 ```bash
-ssh user@NODE_IP
-
-# On the remote node:
-cd /tmp
-tar xzf devmesh-shipper.tar.gz
-sudo ./deploy/install_shipper.sh NODE_NAME API_HOST
-
-# Example for gpu-node-3060:
-sudo ./deploy/install_shipper.sh gpu-node-3060 10.0.0.20
-```
-
-#### 4. Verify installation
-```bash
-# Check service status
+# Shipper status
 sudo systemctl status devmesh-shipper
+sudo journalctl -u devmesh-shipper -n 50
 
-# View logs
-sudo journalctl -u devmesh-shipper -f
+# API health
+curl http://10.0.0.20:8000/health
 
-# Verify logs arriving at API
-curl "http://API_HOST:8000/query/logs?host=NODE_NAME&limit=5"
+# Check embedding progress
+python3 -c "from db.database import get_sync_connection; c=get_sync_connection(); cur=c.cursor(); cur.execute('SELECT COUNT(*) as done FROM log_events WHERE embedding_vector IS NOT NULL'); print(cur.fetchone()); c.close()"
+
+# Test semantic search
+curl "http://10.0.0.20:8000/search/logs?query=docker+restart&limit=5"
 ```
-
----
-
-## Node-Specific Notes
-
-### gpu-node (10.0.0.19)
-- SSH not accessible - need to enable SSH service or open firewall port 22
-
-### monitoring-vm (10.0.0.17)
-- SSH not accessible - need to enable SSH service or open firewall port 22
-- Hosts Grafana - consider filtering Grafana internal logs
-
-### postgres-vm (192.168.1.220)
-- Not on 10.0.0.x network yet
-- Uses API at 192.168.1.184 (dev-services alternate interface)
-
-### teaching (192.168.1.227)
-- Micro node, cannot join 10.0.0.x network
-- Uses API at 192.168.1.184
-
----
-
-## Post-Deployment Verification
-
-After deploying to all nodes, verify data is flowing:
-
-```bash
-# Check logs per host
-curl -s "http://localhost:8000/query/logs?limit=1" | jq '.[] | .host' | sort | uniq -c
-
-# Or query the database directly
-mysql -h 10.0.0.18 -u devmesh -p devmesh -e "
-SELECT host, COUNT(*) as logs, MAX(timestamp) as latest
-FROM log_events
-GROUP BY host
-ORDER BY latest DESC;
-"
-```
-
----
-
-## Troubleshooting
-
-### Shipper not starting
-```bash
-# Check service status
-sudo systemctl status devmesh-shipper
-
-# View detailed logs
-sudo journalctl -u devmesh-shipper -n 100
-
-# Common issues:
-# - API not reachable: curl http://API_HOST:8000/health
-# - Python missing: python3 --version
-# - Missing dependencies: /opt/devmesh/venv/bin/pip list
-```
-
-### No logs appearing in database
-```bash
-# Check if shipper is running
-sudo systemctl is-active devmesh-shipper
-
-# Check if batches are being sent
-sudo journalctl -u devmesh-shipper | grep BATCH
-
-# Test API connectivity from node
-curl http://API_HOST:8000/health
-```
-
-### SSH access issues
-```bash
-# Check if SSH is running on target
-nc -zv NODE_IP 22
-
-# Check firewall on target node
-sudo ufw status
-sudo iptables -L -n | grep 22
-```
-
----
-
-## What's After Multi-Node Deployment
-
-Once all nodes are shipping logs:
-
-1. **Update PHASE1_FOUNDATION.md** with multi-node metrics
-2. **Phase 2: Embeddings & Semantic Search**
-   - Vector embeddings for log messages
-   - Similarity search capabilities
-3. **Phase 3: Neo4j Integration**
-   - Knowledge graph for service relationships
-   - GraphRAG queries
-4. **Phase 4: LLM Reasoning & Agents**
-   - AI-powered incident analysis
-   - Automated recommendations
