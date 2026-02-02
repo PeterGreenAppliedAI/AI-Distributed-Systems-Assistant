@@ -65,6 +65,30 @@ async def lifespan(app: FastAPI):
     app.state.http_client = httpx.AsyncClient(timeout=embedding_timeout)
     logger.info("HTTP client initialised (timeout=%ds)", embedding_timeout)
 
+    # Warm template cache from DB
+    from services.template_cache import TemplateCache
+    app.state.template_cache = TemplateCache()
+    try:
+        from db.database import get_pool as _get_pool
+        pool = _get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute("""
+                    SELECT COUNT(*) as cnt
+                    FROM information_schema.tables
+                    WHERE table_schema = DATABASE()
+                      AND table_name = 'log_templates'
+                """)
+                row = await cursor.fetchone()
+                if row['cnt'] > 0:
+                    await cursor.execute("SELECT template_hash, id FROM log_templates")
+                    rows = await cursor.fetchall()
+                    app.state.template_cache.warm(rows)
+                else:
+                    logger.info("log_templates table not found, template cache empty")
+    except Exception as e:
+        logger.warning("Failed to warm template cache: %s", e)
+
     logger.info("API running on http://%s:%s",
                 os.getenv('API_HOST', '0.0.0.0'), os.getenv('API_PORT', 8000))
 

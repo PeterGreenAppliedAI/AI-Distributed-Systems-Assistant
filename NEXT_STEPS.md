@@ -39,10 +39,13 @@
 - [x] Gateway config in `.env` (`GATEWAY_URL`, `EMBEDDING_MODEL`, `EMBEDDING_TIMEOUT`)
 - [ ] Initial backfill of ~519K rows (in progress, ~55% done)
 - [ ] HNSW vector index (after backfill completes, requires NOT NULL)
-- [ ] Embedding versioning schema (HIGH — needed before canonicalization)
-- [ ] Log canonicalization pipeline
-- [ ] Template deduplication
-- [ ] Cron safety net for missed embeddings
+- [x] Embedding versioning schema (in `log_templates` table: `embedding_model`, `embedding_dim`, `canon_version`, `canon_hash`, `chunk_version`)
+- [x] Log canonicalization pipeline (`services/canonicalize.py` — v1 rules, 37 tests)
+- [x] Template deduplication (`log_templates` table + template-aware ingest + `/search/templates` endpoint)
+- [x] Cron safety net (`scripts/cron_template_safety_net.py`)
+- [ ] Run migration 003 on production DB
+- [ ] Run template backfill on existing ~540K rows
+- [ ] Measure actual compression ratio (unique templates vs total rows)
 
 ---
 
@@ -61,54 +64,45 @@ Add cron job to catch logs where live embedding failed:
 0 */6 * * * cd /home/tadeu718/devmesh-platform && python3 scripts/backfill_embeddings.py --batch-size 50 --delay 2 >> /var/log/devmesh-backfill.log 2>&1
 ```
 
-### 3. Embedding Versioning Schema (HIGH PRIORITY — do this first)
-Unversioned embeddings are the real cost. Without versioning, every pipeline change
-(new model, new canonicalization rules, new chunking) means a painful full reprocess
-with no way to A/B compare or incrementally migrate.
+### 3. ~~Embedding Versioning Schema~~ — DONE
+Implemented in `log_templates` table with: `embedding_model`, `embedding_dim`,
+`canon_version`, `canon_hash`, `chunk_version`, `created_at`, `updated_at`.
 
-Add to the semantic layer table (or directly to `log_events`):
-- `embedding_model` — exact model name (e.g. `qwen3-embedding:8b`)
-- `embedding_dim` — vector dimensions (e.g. 4096)
-- `canon_version` — canonicalization ruleset version (e.g. `v1`)
-- `canon_hash` — hash of the canonicalized text (detect when text actually changed)
-- `chunk_version` — chunking strategy version
-- `created_at` — when this embedding was generated
+### 4. ~~Log Canonicalization~~ — DONE
+Implemented in `services/canonicalize.py` with versioned v1 rules:
+- UFW BLOCK fields, Loki structured logs, batch messages, PAM sessions, cron
+- GIN/Ollama logs, DevMesh API timestamps, shipper PIDs
+- Generic: ISO timestamps, UUIDs, hex strings, IPs, MACs, PIDs, durations, large numbers
+- Whitespace collapse
+- 37 tests in `tests/test_canonicalize.py`
 
-This makes re-embedding routine:
-- Only re-embed when `canon_hash` changes or model/version is bumped
-- Old embeddings stay for comparison until explicitly dropped
-- Backfill script can target specific versions: `WHERE canon_version < 'v2'`
+### 5. ~~Template Deduplication~~ — DONE
+Implemented as `log_templates` table (migration 003) + template-aware ingest:
+- `log_templates` stores unique canonical templates with HNSW-indexed embeddings
+- `log_events.template_id` links raw logs to templates (nullable, no FK)
+- Ingest canonicalizes → hash lookup (cache → DB) → embed only new templates
+- `GET /search/templates` — two-step search: vector on templates, then examples from log_events
+- Template cache warmed at startup, per-worker LRU with 100K max entries
 
-**This must be in the schema before canonicalization work begins.**
+### 6. Deploy Canonicalization + Templates
+```bash
+# Run migration
+python3 db/migrations/003_create_log_templates.py
 
-### 4. Log Canonicalization (HIGH PRIORITY)
-Raw systemd logs contain high-entropy tokens that destroy similarity clustering.
-Build a canonicalization pipeline before re-embedding:
-- `pid=1234` -> `pid=<PID>`
-- IPs -> `<IPV4>` / `<IPV6>`
-- Hex / hashes / UUIDs -> `<HEX>` / `<UUID>`
-- User-specific paths -> `/home/<USER>/...`
-- Strip timestamps embedded in message text
-- Collapse whitespace
+# Backfill existing rows
+python3 scripts/backfill_templates.py --batch-size 50 --delay 2
 
-**Expected impact**: much better nearest-neighbor recall, fewer false uniques.
+# Add cron safety net
+0 */6 * * * cd /home/tadeu718/devmesh-platform && python3 scripts/cron_template_safety_net.py --batch-size 100 --delay 2 >> /var/log/devmesh-template-safety.log 2>&1
+```
 
-**Before building rules**: sample 200+ raw log lines, run canonicalizer, count uniques
-before/after to measure actual compression ratio. Don't guess — measure.
-
-### 5. Template Deduplication (HIGH PRIORITY)
-519K logs likely compress to 50-150K unique message templates (measure this).
-- Compute `template_hash = hash(canonical_message + service + level)`
-- Only embed unique templates, store frequency + last_seen
-- **Expected savings**: needs measurement, estimate 3-10x
-
-### 6. Semantic Layer Table (after canonicalization proves out)
-Separate table for deduplicated canonical text:
-- `template_hash`, `canonical_text`, `embedding_vector`
-- `embedding_model`, `embedding_dim`, `canon_version`, `canon_hash`, `chunk_version`
-- `first_seen`, `last_seen`, `frequency`, `created_at`
-- Raw `log_events` stays as audit/source-of-truth
-- Search hits semantic layer, joins back to raw logs for context
+### 7. Measure Compression Ratio
+After backfill, check:
+```sql
+SELECT COUNT(*) FROM log_templates;  -- unique templates
+SELECT COUNT(*) FROM log_events;     -- total raw logs
+-- Expected: 540K raw → 5K-50K templates (10-100x compression)
+```
 
 ---
 

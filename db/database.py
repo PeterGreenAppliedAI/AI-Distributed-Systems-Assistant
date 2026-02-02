@@ -17,7 +17,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 # Allowlist of tables that can be described (B3 - SQL injection prevention)
-_ALLOWED_TABLES = {"log_events"}
+_ALLOWED_TABLES = {"log_events", "log_templates"}
 
 # ---------------------------------------------------------------------------
 # Environment helpers

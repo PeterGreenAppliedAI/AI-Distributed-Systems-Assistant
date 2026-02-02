@@ -23,6 +23,8 @@ async def client():
         import api.routes
         api.routes._has_hash_column = None
         api.routes._has_embedding_column = None
+        api.routes._has_templates_table = None
+        api.routes._has_template_id_column = None
 
         from main import app
         transport = ASGITransport(app=app)

@@ -63,6 +63,20 @@ class LogSearchResult(LogEventResponse):
     similarity_score: float = Field(..., description="Cosine similarity score (0-1, higher is more similar)")
 
 
+class TemplateSearchResult(BaseModel):
+    """Schema for template-based semantic search results."""
+    template_id: int = Field(..., description="Template database ID")
+    canonical_text: str = Field(..., description="Canonicalized log template")
+    service: str = Field(..., description="Service name")
+    level: str = Field(..., description="Log level")
+    event_count: int = Field(..., description="Number of raw log events matching this template")
+    similarity_score: float = Field(..., description="Cosine similarity score (0-1, higher is more similar)")
+    example_events: list[LogEventResponse] = Field(
+        default_factory=list,
+        description="Recent raw log events matching this template",
+    )
+
+
 class LogIngestRequest(BaseModel):
     """Batch log ingestion request"""
     logs: list[LogEventCreate] = Field(

@@ -16,7 +16,7 @@
 
 - **Platform**: AI-native observability for local infrastructure (7 Linux nodes)
 - **Database**: MariaDB 12.0.2 at 10.0.0.18 with native VECTOR type
-- **LLM Gateway**: Ollama at 192.168.1.184:8001 (DGX Spark)
+- **LLM Gateway**: Ollama at 192.168.1.184:8001 
 - **Graph DB**: FalkorDB (planned, not yet deployed)
 - **All inference is local** — no external API costs, iterate freely
 
@@ -33,8 +33,14 @@
 
 ## Codebase Notes
 
-- Tests: `python3 -m pytest tests/` (41 tests)
-- Schema cache in `api/routes.py`: `_has_hash_column` and `_has_embedding_column` are module-level globals, reset them in test fixtures
+- Tests: `python3 -m pytest tests/` (78 tests)
+- Schema cache in `api/routes.py`: `_has_hash_column`, `_has_embedding_column`, `_has_templates_table`, `_has_template_id_column` are module-level globals, reset them in test fixtures
 - `ingest_logs()` takes `request: Request` as first param (for `app.state.http_client` access) — FastAPI injects this automatically, doesn't affect test client calls
 - Sync DB access: `db.database.get_sync_connection()` / `get_connection()` — used by migrations and CLI scripts
 - Async DB access: `db.database.get_pool()` — used by API routes
+- Template cache: `app.state.template_cache` is a `TemplateCache` instance, warmed at startup from `log_templates`
+- Canonicalization: `services/canonicalize.py` — pure functions, versioned rules (v1), no I/O
+- Template dedup: `log_templates` table stores unique canonical templates with embeddings; `log_events.template_id` links to it
+- When `log_templates` exists, ingest embeds only new canonical texts (not every raw log); search via `/search/templates`
+- Backfill templates: `python3 scripts/backfill_templates.py --batch-size 50 --delay 2`
+- Safety net cron: `python3 scripts/cron_template_safety_net.py --batch-size 100 --delay 2`
