@@ -94,12 +94,91 @@ class TestGINOllamaNormalization:
     def test_gin_log(self):
         raw = "[GIN] 2025/12/01 - 12:00:00 | 200 | 1.234ms | 192.168.1.100"
         result = canonicalize(raw)
-        assert "<IPV4>" not in result or "| <IPV4>" in result or "<TS>" in result
+        assert "[GIN] <TS> | 200 | <DUR> | <ADDR>" in result
+
+    def test_gin_log_with_ipv6(self):
+        raw = "[GIN] 2026/02/01 - 10:00:00 | 404 | 838.603µs | 2001:db8::1"
+        result = canonicalize(raw)
+        assert "[GIN] <TS> | 404 | <DUR> | <ADDR>" in result
+
+    def test_gin_log_various_durations(self):
+        """Different durations should produce the same template."""
+        logs = [
+            "[GIN] 2026/01/30 - 10:00:00 | 200 | 991.59µs | 10.0.0.1",
+            "[GIN] 2026/02/01 - 11:00:00 | 200 | 432.624µs | 10.0.0.2",
+            "[GIN] 2026/02/02 - 12:00:00 | 200 | 999.891µs | 10.0.0.3",
+        ]
+        templates = {canonicalize(log) for log in logs}
+        assert len(templates) == 1
 
     def test_ollama_duration(self):
         raw = "total duration: 1234ms eval count: 50"
         result = canonicalize(raw)
         assert "<DUR>" in result
+
+    def test_ollama_microsecond(self):
+        raw = "response time: 838.603µs"
+        result = canonicalize(raw)
+        assert "<DUR>" in result
+
+
+class TestSessionNormalization:
+    """Session ID normalization."""
+
+    def test_session_scope(self):
+        raw = "session-4912.scope: Consumed 1.5s CPU time."
+        result = canonicalize(raw)
+        assert "session-<SID>.scope" in result
+
+    def test_session_removed(self):
+        raw = "Removed session 4912."
+        result = canonicalize(raw)
+        assert "session <SID>" in result or "Session <SID>" in result
+
+    def test_session_different_ids_same_template(self):
+        logs = [
+            "Removed session 100.",
+            "Removed session 200.",
+            "Removed session 999.",
+        ]
+        templates = {canonicalize(log) for log in logs}
+        assert len(templates) == 1
+
+
+class TestVethNormalization:
+    """Veth interface normalization."""
+
+    def test_veth_name(self):
+        raw = "vethad0ec92: Link UP"
+        result = canonicalize(raw)
+        assert "veth<HEX>" in result
+
+    def test_veth_different_names_same_template(self):
+        logs = [
+            "vethad0ec92: Link UP",
+            "veth1234abcd: Link UP",
+            "vethff00ff00: Link UP",
+        ]
+        templates = {canonicalize(log) for log in logs}
+        assert len(templates) == 1
+
+
+class TestMillisFragment:
+    """Millisecond fragment normalization."""
+
+    def test_millis_after_timestamp(self):
+        raw = "<TS> ,225 - watchfiles.main - INFO - 1 change detected"
+        result = canonicalize(raw)
+        assert ",225" not in result
+
+    def test_millis_different_values_same_template(self):
+        logs = [
+            "<TS> ,225 - main - INFO - Starting",
+            "<TS> ,440 - main - INFO - Starting",
+            "<TS> ,590 - main - INFO - Starting",
+        ]
+        templates = {canonicalize(log) for log in logs}
+        assert len(templates) == 1
 
 
 class TestShipperPID:

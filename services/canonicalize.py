@@ -44,14 +44,24 @@ _PAM_USER = re.compile(r'\bfor user \S+')
 # 5. Cron
 _CRON_CMD = re.compile(r'\((\w+)\) CMD \((.+?)\)')
 
-# 6. GIN/Ollama patterns
+# 6. GIN/Ollama patterns (match GIN with any trailing IP format or placeholder)
 _GIN_LOG = re.compile(
-    r'\[GIN\]\s*\d{4}/\d{2}/\d{2}\s*-\s*\d{2}:\d{2}:\d{2}\s*\|\s*(\d+)\s*\|\s*[\d.]+[^\|]*\|\s*\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}'
+    r'\[GIN\]\s*\d{4}/\d{2}/\d{2}\s*-\s*\d{2}:\d{2}:\d{2}\s*\|\s*(\d+)\s*\|\s*\S+\s*\|\s*\S+'
 )
-_OLLAMA_DURATION = re.compile(r'\b\d+(\.\d+)?(ms|s|m|h|us|ns)\b')
+_OLLAMA_DURATION = re.compile(r'\b\d+(\.\d+)?(ms|s|m|h|us|µs|ns)\b')
+
+# 6b. Session IDs (systemd session numbers)
+_SESSION_SCOPE = re.compile(r'\bsession-\d+\.scope\b')
+_SESSION_ID = re.compile(r'\b(session|Session)\s+\d+\b')
+
+# 6c. Veth interfaces (Docker/container random hex names)
+_VETH_NAME = re.compile(r'\bveth[0-9a-fA-F]+\b')
 
 # 7. DevMesh API prefix timestamps (ISO-ish at start of line)
 _API_PREFIX_TS = re.compile(r'^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[.\d]*[Z]?\s*')
+
+# 7b. Millisecond fragments after timestamps (e.g. ",225 -" or ",440 -")
+_MILLIS_FRAGMENT = re.compile(r',\d{1,3}\s*-\s')
 
 # 8. Shipper PID wrapper
 _SHIPPER_PID = re.compile(r'\[\s*\d+\]')
@@ -101,12 +111,22 @@ def _apply_v1_rules(text: str) -> str:
     text = _CRON_CMD.sub('(<USER>) CMD (<CMD>)', text)
 
     # 6. GIN/Ollama
-    text = _GIN_LOG.sub('[GIN] <TS> | \\1 | <DUR> | <IPV4>', text)
+    text = _GIN_LOG.sub('[GIN] <TS> | \\1 | <DUR> | <ADDR>', text)
     # Apply Ollama duration after GIN to catch remaining durations
     text = _OLLAMA_DURATION.sub('<DUR>', text)
 
+    # 6b. Session IDs
+    text = _SESSION_SCOPE.sub('session-<SID>.scope', text)
+    text = _SESSION_ID.sub('\\1 <SID>', text)
+
+    # 6c. Veth interfaces
+    text = _VETH_NAME.sub('veth<HEX>', text)
+
     # 7. DevMesh API prefix timestamps
     text = _API_PREFIX_TS.sub('<TS> ', text)
+
+    # 7b. Millisecond fragments
+    text = _MILLIS_FRAGMENT.sub(' - ', text)
 
     # 8. Shipper PID wrapper
     text = _SHIPPER_PID.sub('[<PID>]', text)
