@@ -78,6 +78,52 @@ def get_stats(cursor, cutoff_date):
     }
 
 
+def delete_stale_templates(cursor, conn, cutoff_date, dry_run=False):
+    """Delete templates not seen since cutoff_date.
+
+    Templates are considered stale if their last_seen timestamp is older
+    than the cutoff. This keeps template growth bounded as log_events expire.
+    """
+    # Check if log_templates table exists
+    cursor.execute("""
+        SELECT COUNT(*) as cnt FROM information_schema.tables
+        WHERE table_schema = %s AND table_name = 'log_templates'
+    """, (os.getenv('DB_NAME', 'devmesh'),))
+    if cursor.fetchone()['cnt'] == 0:
+        logger.info("Template cleanup: log_templates table not found, skipping")
+        return {'deleted': 0}
+
+    # Count stale templates
+    cursor.execute("""
+        SELECT COUNT(*) as cnt FROM log_templates
+        WHERE last_seen < %s
+    """, (cutoff_date,))
+    stale_count = cursor.fetchone()['cnt']
+
+    if stale_count == 0:
+        logger.info("Template cleanup: no stale templates found")
+        return {'deleted': 0}
+
+    logger.info("Template cleanup: %s stale templates (last_seen < %s)",
+                f"{stale_count:,}", cutoff_date.strftime('%Y-%m-%d'))
+
+    if dry_run:
+        logger.info("Template cleanup: DRY RUN - would delete %s templates",
+                    f"{stale_count:,}")
+        return {'deleted': 0, 'would_delete': stale_count}
+
+    # Delete stale templates (no batching needed, typically small count)
+    cursor.execute("""
+        DELETE FROM log_templates
+        WHERE last_seen < %s
+    """, (cutoff_date,))
+    deleted = cursor.rowcount
+    conn.commit()
+
+    logger.info("Template cleanup: deleted %s stale templates", f"{deleted:,}")
+    return {'deleted': deleted}
+
+
 def delete_old_logs(retention_days=90, batch_size=5000, dry_run=False):
     """Delete logs older than retention_days using batched deletes."""
     cutoff_date = datetime.now() - timedelta(days=retention_days)
@@ -102,12 +148,21 @@ def delete_old_logs(retention_days=90, batch_size=5000, dry_run=False):
 
         if stats_before['to_delete'] == 0:
             logger.info("No logs older than %d days. Nothing to delete.", retention_days)
-            return {'deleted': 0, 'batches': 0}
+            # Still clean up stale templates
+            template_result = delete_stale_templates(cursor, conn, cutoff_date, dry_run)
+            return {'deleted': 0, 'batches': 0, 'templates_deleted': template_result.get('deleted', 0)}
 
         if dry_run:
             logger.info("DRY RUN - No logs will be deleted")
             logger.info("Would delete %s logs", f"{stats_before['to_delete']:,}")
-            return {'deleted': 0, 'batches': 0, 'would_delete': stats_before['to_delete']}
+            # Still check templates in dry run mode
+            template_result = delete_stale_templates(cursor, conn, cutoff_date, dry_run)
+            return {
+                'deleted': 0,
+                'batches': 0,
+                'would_delete': stats_before['to_delete'],
+                'templates_would_delete': template_result.get('would_delete', 0),
+            }
 
         total_deleted = 0
         batch_num = 0
@@ -142,10 +197,14 @@ def delete_old_logs(retention_days=90, batch_size=5000, dry_run=False):
         if total_deleted > 0:
             logger.info("Note: Run 'OPTIMIZE TABLE log_events' to reclaim disk space")
 
+        # Clean up stale templates (same retention period)
+        template_result = delete_stale_templates(cursor, conn, cutoff_date, dry_run)
+
         return {
             'deleted': total_deleted,
             'batches': batch_num,
             'remaining': stats_after['total_logs'],
+            'templates_deleted': template_result.get('deleted', 0),
         }
 
     except Exception as e:
@@ -181,7 +240,9 @@ def main():
             logger.info("Dry run complete. Would delete %s logs.",
                         f"{result.get('would_delete', 0):,}")
         else:
-            logger.info("TTL cleanup finished. Deleted %s logs.", f"{result['deleted']:,}")
+            logger.info("TTL cleanup finished. Deleted %s logs, %s templates.",
+                        f"{result['deleted']:,}",
+                        f"{result.get('templates_deleted', 0):,}")
 
     except Exception as e:
         logger.error("TTL cleanup failed: %s", e)
