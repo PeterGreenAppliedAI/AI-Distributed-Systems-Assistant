@@ -8,7 +8,7 @@
 
 ### Phase 1: Logging Foundation — Complete
 - [x] Real-time log collection from 7 nodes via journald shippers
-- [x] 519K+ logs in MariaDB with deduplication
+- [x] 928K+ logs in MariaDB with deduplication
 - [x] FastAPI ingestion and query API
 - [x] Noise filtering, cursor-based recovery
 - [x] Centralized error handling architecture
@@ -29,7 +29,7 @@
 
 **Remaining**: Enable SSH on monitoring-vm and deploy shipper.
 
-### Phase 2: Embeddings & Semantic Search — In Progress
+### Phase 2: Embeddings & Semantic Search — Complete
 
 - [x] `embedding_vector VECTOR(4096)` column added to `log_events`
 - [x] Embedding service (`services/embedding.py`) with batch `/v1/embeddings` support
@@ -37,15 +37,12 @@
 - [x] Semantic search endpoint (`GET /search/logs`) with `VEC_DISTANCE_COSINE()`
 - [x] Backfill script with ID-based cursor and thermal delay
 - [x] Gateway config in `.env` (`GATEWAY_URL`, `EMBEDDING_MODEL`, `EMBEDDING_TIMEOUT`)
-- [ ] Initial backfill of ~519K rows (in progress, ~55% done)
-- [ ] HNSW vector index (after backfill completes, requires NOT NULL)
 - [x] Embedding versioning schema (in `log_templates` table: `embedding_model`, `embedding_dim`, `canon_version`, `canon_hash`, `chunk_version`)
 - [x] Log canonicalization pipeline (`services/canonicalize.py` — v1 rules, 37 tests)
 - [x] Template deduplication (`log_templates` table + template-aware ingest + `/search/templates` endpoint)
 - [x] Cron safety net (`scripts/cron_template_safety_net.py`)
-- [ ] Run migration 003 on production DB
-- [ ] Run template backfill on existing ~540K rows
-- [ ] Measure actual compression ratio (unique templates vs total rows)
+- [x] Template TTL cleanup (stale templates pruned alongside log_events)
+- [x] Compression ratio measured: **928K logs → 5,944 templates (151x compression)**
 
 ---
 
@@ -96,12 +93,11 @@ python3 scripts/backfill_templates.py --batch-size 50 --delay 2
 0 */6 * * * cd /home/tadeu718/devmesh-platform && python3 scripts/cron_template_safety_net.py --batch-size 100 --delay 2 >> /var/log/devmesh-template-safety.log 2>&1
 ```
 
-### 7. Measure Compression Ratio
-After backfill, check:
+### 7. ~~Measure Compression Ratio~~ — DONE
 ```sql
-SELECT COUNT(*) FROM log_templates;  -- unique templates
-SELECT COUNT(*) FROM log_events;     -- total raw logs
--- Expected: 540K raw → 5K-50K templates (10-100x compression)
+SELECT COUNT(*) FROM log_templates;  -- 5,944 unique templates
+SELECT COUNT(*) FROM log_events;     -- 928K raw logs
+-- Result: 151x compression (exceeded 10-100x expectation)
 ```
 
 ---
@@ -118,29 +114,230 @@ SELECT COUNT(*) FROM log_events;     -- total raw logs
 
 ---
 
-## Phase 3: Retrieval & LLM Reasoning
+## Phase 3: LLM Reasoning Layer — In Progress
 
-**Goal**: "Explain what happened during this incident"
+**Goal**: Natural language log analysis with LLM tool calling
 
-- Vector + time-based retrieval pipeline
-- LLM integration (Phi 4 for orchestration, larger model for synthesis)
-- Context assembly: semantic search results + time window expansion
-- Explanation API endpoint
-- **Exit criteria**: Natural language explanations of log patterns
+- [x] LLM config in `.env` (`LLM_MODEL`, `LLM_TIMEOUT`, `LLM_MAX_ITERATIONS`)
+- [x] LLM error types (`LLMError`, `LLMTimeoutError`, `LLMToolError`)
+- [x] Request/response models (`AnalyzeRequest`, `AnalyzeResponse`, `ToolCallRecord`)
+- [x] 5 LLM tools (`search_templates`, `query_logs`, `get_template_stats`, `get_service_overview`, `get_log_context`)
+- [x] LLM orchestration loop (`services/llm.py`) with Ollama `/api/chat` tool calling
+- [x] `POST /analyze` endpoint wired up in `api/routes.py`
+- [x] 26 new tests (114 total, all passing)
+- [x] End-to-end validation with live Ollama + `nemotron-3-nano:30b`
+- [x] Frontend UI (`/ui` → `static/index.html`) — dark theme, filters, markdown rendering, query history
+- [x] Two-phase synthesis — separate tool-calling loop from analysis generation
+- [x] Fallback parser for hallucinated tool names (alias map + text JSON recovery)
+- [x] Tune system prompt based on real query results
+- **Exit criteria**: Natural language explanations of log patterns with cited evidence — **achieved**
+
+#### Observations from live testing
+- Nemotron-3-nano struggles with Ollama's structured `tool_calls` format — frequently outputs tool calls as text JSON or invents tool names (`RunLogSearch`, `search_log_templates`)
+- The same model works well with text-based ReAct (Thought/Action/Observation) in other projects (Discord bot with multi-hop search) — the issue is Ollama's tool-call format, not the model's reasoning ability
+- Two-phase synthesis (tool loop → separate summarization call) dramatically improved output quality
+- The model does its best work in the first 2-3 tool calls; beyond that it starts hallucinating
+- Service overview reports 24h errors; raw query_logs returns all-time — the model caught this inconsistency
+
+#### Possible next direction: deterministic routing + ReAct
+- **Deterministic tool routing**: Python classifies the query and picks tools (like the Discord bot pattern — check known data first, fill gaps second), LLM only does synthesis
+- **ReAct over Ollama tool_calls**: If the model needs to drive tool selection, use text-based Thought/Action/Observation parsing instead of Ollama's structured format
+- These are not mutually exclusive — route obvious queries deterministically, fall back to ReAct for ambiguous ones
 
 ---
 
-## Phase 4: Knowledge Graph & Agents
+## Phase 4: Infrastructure Memory Platform
 
-**Goal**: Multi-agent incident analysis with knowledge graph
+**Reframe**: The logs are raw material, not the product. The value is a system that builds and maintains structured memory of what the infrastructure does — and reasons over that memory.
 
-- FalkorDB deployment
-- Graph schema (`Service`, `Node`, `Incident`, `Error`)
-- Graph projection ETL (logs -> graph)
-- Multi-agent system (Planner, Log Analyst, Explainer, Runbook, Operator)
-- GraphRAG: hybrid vector similarity + graph neighborhood retrieval
-- Operator console (Streamlit or web UI)
-- **Exit criteria**: Agents can correlate incidents across services
+**What "memory" means here**:
+- Templates are compressed memories (928K events → 5,944 patterns, 151x compression)
+- Temporal awareness: knowing what "normal" looks like per host/service, detecting drift
+- Correlation: connecting an OOM kill on Jan 20 to behavior changes after
+- Pattern lifecycle: tracking when templates first appear, spike, or disappear
+
+### Proactive Detection Architecture
+
+The goal: shift from reactive (human asks question) to proactive (system alerts on anomalies).
+
+**Key insight**: The "always-on watchful eye" doesn't need to be an LLM. Cheap detector → expensive investigation.
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Log Stream (continuous ingestion)                      │
+└─────────────────────────────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────┐
+│  Detector Layer (cheap, always-on, Python + SQL)        │
+│  - Error rate spike in time window                      │
+│  - New ERROR template never seen before                 │
+│  - Template frequency anomaly (2σ from baseline)        │
+│  - Service went silent (expected logs missing)          │
+│  - Correlation triggers (OOM + service restart)         │
+└─────────────────────────────────────────────────────────┘
+                          │
+                    (threshold crossed)
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────┐
+│  CrewAI Investigation (expensive, on-demand)            │
+│  ├── Timeline Agent: reconstruct last 30 minutes       │
+│  ├── Root Cause Agent: correlate errors, find origin   │
+│  ├── Impact Agent: what else was affected              │
+│  └── Reporter Agent: structured incident summary       │
+└─────────────────────────────────────────────────────────┘
+                          │
+                          ▼
+              Notification (Discord / Email / Dashboard)
+```
+
+**Why CrewAI makes sense here** (vs the current two-phase approach):
+- Investigation is genuinely multi-step with different tools per phase
+- Each agent has focused context and narrow prompts
+- Delegation logic: "if error count > 100, add triage agent"
+- The detector layer keeps LLM costs near zero until something's actually wrong
+
+### Graph-Enhanced Diagnosis (FalkorDB)
+
+The graph turns isolated facts into diagnosable relationships:
+
+**Without graph**:
+```
+Alert: mariadb.service had 50 errors
+Alert: devmesh-api.service restarted 3 times
+Alert: ollama.service timeouts increased
+(Three separate facts — human connects the dots)
+```
+
+**With graph**:
+```
+mariadb.service ──PROVIDES_DB_FOR──→ devmesh-api.service
+devmesh-api.service ──CALLS──→ ollama.service
+dev-services ──RUNS──→ [mariadb, devmesh-api]
+
+Investigation agent traverses:
+  "mariadb errors"
+    → what depends on mariadb? → devmesh-api
+    → what does devmesh-api call? → ollama
+    → conclusion: mariadb errors cascaded through API to ollama timeouts
+```
+
+**What the graph enables per agent**:
+
+| Agent | Without Graph | With Graph |
+|-------|---------------|------------|
+| Timeline | "these errors happened" | "these errors happened, here's what they touched" |
+| Root Cause | "first error was in X" | "first error in X, which is upstream of Y and Z" |
+| Impact | "these services also errored" | "these are downstream, expected to be affected" |
+| Reporter | list of facts | narrative with causality |
+
+The graph is the difference between **correlation** (these happened together) and **causation** (this caused that because of this relationship).
+
+### Implementation Plan
+
+#### Phase 4A: Incident Pipeline (before graph)
+
+**New tables:**
+```sql
+-- Detector state (one row per detector type per service)
+detector_state (
+    detector_name,      -- 'error_spike', 'silence', 'new_template'
+    service,            -- nullable, some detectors are global
+    last_run_ts,
+    ewma_value,         -- exponentially weighted moving average
+    stddev,             -- for threshold calculation
+    sample_count        -- how many windows observed
+)
+
+-- Incidents (one row per triggered event)
+incidents (
+    id,
+    trigger_type,       -- which detector fired
+    severity,           -- critical, warning, info
+    service,
+    host,
+    created_ts,
+    status,             -- open, investigating, closed
+    context_bundle,     -- JSON blob from context packer
+    cooldown_until      -- prevent re-triggering
+)
+
+-- Investigation results
+incident_reports (
+    id,
+    incident_id,        -- FK to incidents
+    created_ts,
+    report_md,          -- markdown summary
+    root_cause_hypothesis,
+    confidence,         -- how sure is the model
+    evidence_template_ids,  -- which templates support this
+    suggested_actions   -- what to do next
+)
+```
+
+**Components to build:**
+- [ ] Migration for incident pipeline tables
+- [ ] `infra/detector.py` — runs every 60s, checks thresholds, writes to `incidents`
+- [ ] Detector types (start with these):
+  - Error-rate spike per service (EWMA baseline)
+  - New ERROR template (first_seen within window)
+  - Silence detector (expected logs missing)
+  - Catastrophic primitives (OOM, disk full, connection refused templates)
+- [ ] Context packer function — bundle relevant templates for investigation
+- [ ] CrewAI crew definition (Timeline, Root Cause, Impact, Reporter agents)
+- [ ] Notification integration (Discord webhook first)
+- [ ] Learning period logic (observe-only until baseline established)
+- [ ] Cooldown/dedup logic (same incident doesn't re-trigger within window)
+
+**Exit criteria**: System detects real anomalies, runs investigation, posts report to Discord.
+
+#### Phase 4B: Minimal Graph (after incident pipeline works)
+
+Don't infer the graph — own it manually first.
+
+**Start with `inventory.yaml`:**
+```yaml
+services:
+  mariadb:
+    hosts: [mariadb-vm]
+    type: database
+  devmesh-api:
+    hosts: [dev-services]
+    depends_on: [mariadb, ollama]
+    type: api
+  ollama:
+    hosts: [gpu-node]
+    type: inference
+  devmesh-shipper:
+    hosts: [all]
+    type: agent
+
+edges:
+  - from: devmesh-api
+    to: mariadb
+    type: DEPENDS_ON
+  - from: devmesh-api
+    to: ollama
+    type: CALLS
+```
+
+**Then:**
+- [ ] Deploy FalkorDB
+- [ ] Graph schema (`Service`, `Host`, `Database` nodes; `DEPENDS_ON`, `CALLS`, `RUNS_ON` edges)
+- [ ] Loader script: `inventory.yaml` → FalkorDB
+- [ ] Update Impact Agent to use graph traversal for blast radius
+
+#### Phase 4C: Graph Enrichment (after manual graph is trusted)
+
+Learn edges from observations:
+- Network connections
+- Config file parsing
+- Log template analysis ("connected to X", "querying Y", "failed to reach Z")
+
+Only do this after the manual truth graph exists and the incident pipeline is battle-tested.
+
+**Exit criteria**: System proactively alerts on anomalies, provides root cause analysis with causal narrative from graph traversal, without human prompting
 
 ---
 
