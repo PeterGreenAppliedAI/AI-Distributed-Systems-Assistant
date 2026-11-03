@@ -112,13 +112,27 @@ def delete_stale_templates(cursor, conn, cutoff_date, dry_run=False):
                     f"{stale_count:,}")
         return {'deleted': 0, 'would_delete': stale_count}
 
-    # Delete stale templates (no batching needed, typically small count)
-    cursor.execute("""
-        DELETE FROM log_templates
-        WHERE last_seen < %s
-    """, (cutoff_date,))
-    deleted = cursor.rowcount
-    conn.commit()
+    # Delete stale templates in small LIMIT batches; log_templates is hot
+    # (concurrent UPDATEs from ingest), so a single bulk DELETE collides
+    # with optimistic concurrency (MariaDB error 1020).
+    deleted = 0
+    while True:
+        try:
+            cursor.execute("""
+                DELETE FROM log_templates
+                WHERE last_seen < %s
+                LIMIT 100
+            """, (cutoff_date,))
+            n = cursor.rowcount
+            conn.commit()
+            if n == 0:
+                break
+            deleted += n
+        except Exception as e:
+            conn.rollback()
+            logger.warning("Template cleanup: stopping early after %s deletes — %s",
+                           f"{deleted:,}", e)
+            break
 
     logger.info("Template cleanup: deleted %s stale templates", f"{deleted:,}")
     return {'deleted': deleted}

@@ -1,0 +1,17 @@
+[Unit]
+Description=DevMesh platform self-monitor
+After=network.target
+
+[Service]
+Type=oneshot
+User=tadeu718
+WorkingDirectory=/home/tadeu718/devmesh-platform
+Environment="PATH=/home/tadeu718/devmesh-platform/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=/home/tadeu718/devmesh-platform/venv/bin/python /home/tadeu718/devmesh-platform/scripts/healthcheck.py
+
+# Don't fail the unit when checks return warn/crit - we want the timer to keep firing
+SuccessExitStatus=0 1 2
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=devmesh-health
