@@ -81,6 +81,7 @@ mkdir -p "$TEMP_DIR/shipper"
 cp "$PROJECT_DIR/shipper/log_shipper_daemon.py" "$TEMP_DIR/shipper/"
 cp "$PROJECT_DIR/shipper/filter_config.py" "$TEMP_DIR/shipper/"
 cp "$PROJECT_DIR/shipper/filter_config.yaml" "$TEMP_DIR/shipper/"
+cp "$PROJECT_DIR/shipper/transforms.py" "$TEMP_DIR/shipper/"
 cp "$SCRIPT_DIR/install_shipper.sh" "$TEMP_DIR/"
 
 log_step "Copying files to $NODE_IP..."

@@ -7,7 +7,10 @@ Built with MariaDB (vector search), Ollama, and open-source LLMs.
 
 ---
 
-## Current Status (February 2026)
+## Current Status (February 2026 snapshot)
+
+> Counts below are from February 2026. By May 2026 `log_events` was ~29M rows
+> and `log_templates` ~22.6K rows; re-measure for current figures.
 
 | Metric | Value |
 |--------|-------|
@@ -15,7 +18,7 @@ Built with MariaDB (vector search), Ollama, and open-source LLMs.
 | Unique templates | 5,944 (151x compression) |
 | Active nodes | 7 |
 | Storage | ~17.6 GB |
-| Retention | 90 days (TTL cleanup) |
+| Retention | 90 days — **only if** `devmesh-ttl-cleanup.timer` is installed (see NEXT_STEPS.md) |
 
 ### What's Working
 
@@ -25,7 +28,7 @@ Built with MariaDB (vector search), Ollama, and open-source LLMs.
 - **Template deduplication** — 928K raw logs → 5,944 unique patterns
 - **LLM analysis** via `/analyze` endpoint with tool calling (nemotron-3-nano)
 - **Web UI** at `/ui` — dark theme, filters, markdown rendering
-- **TTL cleanup** — automatic pruning of logs and templates older than 90 days
+- **TTL cleanup** — prunes logs and templates older than 90 days via `infra/devmesh-ttl-cleanup.timer` (must be installed; not automatic out of the box)
 
 ---
 

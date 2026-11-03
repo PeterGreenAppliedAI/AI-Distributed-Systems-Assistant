@@ -261,11 +261,14 @@ def _extract_sources(tool_records: list[ToolCallRecord]) -> list[dict]:
     """Extract cited sources from tool call results."""
     sources = []
     for record in tool_records:
+        # Service overview rows are aggregates, not cited events
+        if record.tool_name == "get_service_overview":
+            continue
         try:
             data = json.loads(record.result_summary)
             if isinstance(data, list):
                 for item in data[:5]:
-                    if isinstance(item, dict) and "error" not in item:
+                    if isinstance(item, dict) and "error" not in item and "_truncated" not in item:
                         sources.append(item)
         except (json.JSONDecodeError, TypeError):
             pass

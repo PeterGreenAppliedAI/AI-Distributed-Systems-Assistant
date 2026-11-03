@@ -33,7 +33,7 @@
 
 ## Codebase Notes
 
-- Tests: `python3 -m pytest tests/` (78 tests)
+- Tests: `python3 -m pytest tests/` (126 tests)
 - Schema cache in `api/routes.py`: `_has_hash_column`, `_has_embedding_column`, `_has_templates_table`, `_has_template_id_column` are module-level globals, reset them in test fixtures
 - `ingest_logs()` takes `request: Request` as first param (for `app.state.http_client` access) — FastAPI injects this automatically, doesn't affect test client calls
 - Sync DB access: `db.database.get_sync_connection()` / `get_connection()` — used by migrations and CLI scripts

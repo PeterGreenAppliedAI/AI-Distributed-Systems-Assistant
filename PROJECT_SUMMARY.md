@@ -57,7 +57,7 @@ A local-first platform that:
 │  Tables:                 │
 │  · log_events (899K rows)│
 │    - VECTOR(4096) column │
-│    - template_id FK      │
+│    - template_id (no FK) │
 │  · log_templates (5,713) │
 │    - HNSW vector index   │
 │    - canonical_text      │
@@ -69,6 +69,10 @@ A local-first platform that:
 
 ## Key Numbers
 
+> Snapshot from early 2026 — **stale**. By the 2026-05-06 incident `log_events`
+> held ~29M rows / 35 GB and `log_templates` 22,595 live rows (see
+> `scripts/rebuild_template_vector_index.md`). Re-measure before quoting ratios.
+
 | Metric | Value |
 |--------|-------|
 | Nodes monitored | 7 |
@@ -77,8 +81,8 @@ A local-first platform that:
 | Canonical templates | 5,713 |
 | Compression ratio | **157x** (899K → 5.7K patterns) |
 | Embedding dimensions | 4,096 |
-| Test suite | 114 tests, all passing |
-| Codebase | 42 Python files, ~4,400 lines |
+| Test suite | 126 tests, all passing (DB access mocked) |
+| Codebase | 42 Python files, ~4,600 lines production (~7,600 incl. tests/scripts) |
 | External API costs | **$0** (all inference local) |
 
 ---
@@ -197,7 +201,7 @@ A local-first platform that:
 | gpu-node-3060 (10.0.0.14) | Compute node | RTX 3060 |
 | + 3 more nodes | Various workloads | electrical-estimator, teaching, postgres-vm |
 
-**All inference is local. Zero external API calls. Zero cloud costs.**
+**All inference is local. Zero external API calls at runtime (UI JS is vendored under `static/vendor/`). Zero cloud costs.**
 
 ---
 
@@ -216,7 +220,7 @@ A local-first platform that:
 - The issue is Ollama's tool-call format, not the model's reasoning ability
 - Two-phase synthesis dramatically improved output quality
 - Best work happens in first 2-3 tool calls; degrades with more iterations
-- Deterministic pre-fetching cut typical queries from 8 iterations to 2
+- Deterministic pre-fetching cut typical queries from hitting the 8-iteration cap (`LLM_MAX_ITERATIONS=8` in `.env`; code default 5) to ~2
 
 ---
 

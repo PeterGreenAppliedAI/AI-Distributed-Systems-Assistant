@@ -1,8 +1,23 @@
 # DevMesh Platform - Next Steps
 
-**Last Updated**: 2026-05-06
+**Last Updated**: 2026-11-03
 
 ---
+
+## ⏸ PAUSED (2026-11-03)
+
+Platform intentionally paused while MariaDB (10.0.0.18) is down. Services and
+timers stopped so the shipper spool stops growing. To resume: restore the DB,
+then re-enable services, then drain the spool (see 2026-11-03 outage section).
+
+## Future Ideas (not scheduled — after Phase 3/4)
+
+- **Fleet-wide scraping**: beyond journald, e.g. metrics, service inventory,
+  config/package changes, so the platform knows *when things happened* across all nodes
+- **Event timeline / change detection**: "what changed on which node, when"
+- **Dashboard** reachable over VPN into the home network
+- **Phone monitoring**: mobile-friendly dashboard or app + push notifications
+  (pairs with the healthcheck notification TODO — ntfy is a cheap first step)
 
 ## Current Status
 
@@ -102,6 +117,55 @@ SELECT COUNT(*) FROM log_events;     -- 928K raw logs
 
 ---
 
+## 2026-11-03 — ACTIVE OUTAGE: MariaDB unreachable
+
+Found while addressing the external review. **10.0.0.18:3306 refuses connections**
+(SSH on :22 is up). Healthcheck has been `crit` the whole time, but alerts only
+reach syslog, so nobody saw them.
+- Every TTL run in the journal (since 2026-10-08) failed with error 2003.
+- `shipper/failed_batches.jsonl` on dev-services is **4.8 GB**; oldest entry
+  2026-05-10, so the outage may date back to just after the May incident.
+- Same symptom as the May incident. Suspected repeat disk-full / HNSW bloat,
+  **unconfirmed**. Check `df -h` and `ls -lh /var/lib/mysql/<db>/` on the VM.
+- [ ] Restore MariaDB (stop API before any `log_templates` DDL — see runbook)
+- [ ] Drain spool: `python3 scripts/drain_failed_batches.py` (now streams; the
+      old version would have loaded all 4.8 GB into RAM)
+- [ ] Wire healthcheck to a real notification channel. **This outage is why it matters.**
+
+## 2026-11-03 — External Review Fixes
+
+Fixed (tests in `tests/test_review_fixes.py`, 12 new, 126 total):
+- [x] Stored XSS: UI markdown now `DOMPurify.sanitize(marked.parse(...))`; history escaped
+- [x] UI JS vendored + pinned in `static/vendor/` (marked 15.0.12, DOMPurify 3.2.6), so no CDN
+- [x] Auth + UI: `/ui` and `/static/*` public; UI prompts for and sends `X-API-Key`;
+      drain script sends `API_KEY`; constant-time key compare
+- [x] Template `event_count` double-count on create and inflation on duplicate resend.
+      New templates start at 0 and are counted post-insert only for rows actually inserted
+- [x] Failed schema checks no longer cached; DB pool retries in background if down at boot
+- [x] Migration 002 `--create-index` refuses when `log_templates` exists
+      (NOT NULL `log_events.embedding_vector` would break template-mode ingest)
+- [x] LLM tool args clamped (limit ≤200, hours ≤720, window ≤120 min)
+- [x] `truncate_result` returns valid JSON (whole items + marker), so sources survive truncation
+- [x] `search_templates` tool param-order bug (filters bound to the wrong placeholders)
+- [x] Service-overview rows no longer reported as "cited events"
+- [x] `load_dotenv()` runs before app imports
+- [x] Healthcheck staleness computed DB-side vs `UTC_TIMESTAMP()`
+- [x] `reconsolidate_templates.py`: keeps victims whose re-link failed; survivor takes
+      MIN(first_seen)/MAX(last_seen)/merged hosts; refuses while API is up
+- [x] `drain_failed_batches.py`: streams, renames spool before reading, saves bad lines
+      to `.rejected`, correct completion logic, never clobbers an old `.drained`
+- [x] Deploy package ships `shipper/transforms.py`
+- [x] Runbook: `/search/templates?query=&limit=`, `ADD VECTOR INDEX` (documented form)
+- [x] README/PROJECT_SUMMARY: FK claim, TTL wording, test/line counts, stale-count notes
+
+Still open:
+- [ ] Re-measure events/templates/compression once DB is back; replace stale doc numbers
+- [ ] Embedding calls unchunked; sequential fallback still 120 s/text timeout
+- [ ] `infra/docker-compose.yml` is legacy (points at `backend/Dockerfile`, file is
+      `DockerFile`, runs the old stub). Fix or delete; prod runs via systemd
+- [ ] Auth still off by default; plaintext HTTP
+- [ ] Ingest tests mock SQL only; no test against a real MariaDB
+
 ## 2026-05-06 Incident & Platform Self-Monitoring
 
 **What happened**: MariaDB VM `/` filled to 100%, ingest failed silently for
@@ -125,14 +189,14 @@ until MariaDB couldn't autoextend further.
 - [x] `scripts/healthcheck.py` — disk, services, DB connect, ingest staleness,
       shipper backlog. Outputs JSON status + syslog warnings.
 - [x] `infra/devmesh-healthcheck.{service,timer}` — runs every 5 minutes.
-- [ ] **Install on dev-services**:
+- [x] **Install on dev-services** (verified active 2026-11-03):
       ```bash
       sudo cp /home/tadeu718/devmesh-platform/infra/devmesh-healthcheck.{service,timer} \
               /etc/systemd/system/
       sudo systemctl daemon-reload
       sudo systemctl enable --now devmesh-healthcheck.timer
       ```
-- [ ] **Install TTL timer** (was missing — never enforced retention):
+- [x] **Install TTL timer** (verified active 2026-11-03 — but every run since at least 2026-10-08 failed: DB unreachable):
       ```bash
       sudo cp /home/tadeu718/devmesh-platform/infra/devmesh-ttl-cleanup.{service,timer} \
               /etc/systemd/system/
@@ -186,7 +250,7 @@ until MariaDB couldn't autoextend further.
 - [x] 5 LLM tools (`search_templates`, `query_logs`, `get_template_stats`, `get_service_overview`, `get_log_context`)
 - [x] LLM orchestration loop (`services/llm.py`) with Ollama `/api/chat` tool calling
 - [x] `POST /analyze` endpoint wired up in `api/routes.py`
-- [x] 26 new tests (114 total, all passing)
+- [x] 26 new tests (code + tests landed in fea727c, 2026-11-03; 126 total after review fixes)
 - [x] End-to-end validation with live Ollama + `nemotron-3-nano:30b`
 - [x] Frontend UI (`/ui` → `static/index.html`) — dark theme, filters, markdown rendering, query history
 - [x] Two-phase synthesis — separate tool-calling loop from analysis generation

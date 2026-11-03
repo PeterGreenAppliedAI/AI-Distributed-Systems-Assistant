@@ -41,7 +41,7 @@ This runbook reclaims that space by dropping and rebuilding the vector index.
   returns degraded results from the moment the DROP commits until the new
   index is live.
 
-## Approach: DROP + ADD VECTOR KEY (preferred over `OPTIMIZE TABLE`)
+## Approach: DROP + ADD VECTOR INDEX (preferred over `OPTIMIZE TABLE`)
 
 Smaller blast radius, faster, only touches the broken thing. Full
 `OPTIMIZE TABLE` would also work but rebuilds every index and locks the
@@ -88,7 +88,7 @@ by ~49 GB immediately. From this point, vector search is offline.
 
 ```sql
 ALTER TABLE log_templates
-  ADD VECTOR KEY idx_template_embedding (embedding_vector);
+  ADD VECTOR INDEX idx_template_embedding (embedding_vector);
 ```
 
 Has to insert ~23k 4096-dim vectors into a fresh HNSW graph. **With API
@@ -140,7 +140,7 @@ within seconds.
 ### 6. End-to-end test
 
 ```bash
-curl -s 'http://localhost:8000/search/templates?q=ufw+block&k=5' | head
+curl -s 'http://localhost:8000/search/templates?query=ufw+block&limit=5' | head
 ```
 
 ## Rollback
@@ -152,7 +152,7 @@ the index is derived from it and can always be rebuilt.
 
 If step 3 errors out:
 - Confirm with `SHOW INDEX FROM log_templates` that no vector index exists.
-- Re-run the `ADD VECTOR KEY` statement.
+- Re-run the `ADD VECTOR INDEX` statement.
 - If it persistently fails, capture `journalctl -u mariadb -n 100 -l` and
   investigate before retrying.
 

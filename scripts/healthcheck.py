@@ -16,7 +16,7 @@ import subprocess
 import sys
 import syslog
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -61,8 +61,15 @@ def check_db_and_ingest():
         from db.database import get_sync_connection
         conn = get_sync_connection()
         cur = conn.cursor()
-        cur.execute("SELECT MAX(timestamp) AS mx FROM log_events")
-        mx = cur.fetchone()['mx']
+        # Compute age DB-side against UTC: log_events.timestamp is naive UTC,
+        # so comparing to the host's local datetime.now() is wrong off-UTC.
+        cur.execute(
+            "SELECT MAX(timestamp) AS mx, "
+            "TIMESTAMPDIFF(MICROSECOND, MAX(timestamp), UTC_TIMESTAMP(6)) / 1e6 AS age "
+            "FROM log_events"
+        )
+        row = cur.fetchone()
+        mx, age = row['mx'], row['age']
         conn.close()
     except Exception as e:
         return [('crit', 'db:connect', f'{type(e).__name__}: {e}')]
@@ -70,7 +77,7 @@ def check_db_and_ingest():
     if mx is None:
         return [('crit', 'ingest:staleness', 'no events in log_events')]
 
-    age = (datetime.now() - mx).total_seconds()
+    age = float(age)
     severity = 'crit' if age >= INGEST_STALE_CRIT_SEC else 'warn' if age >= INGEST_STALE_WARN_SEC else 'ok'
     return [
         ('ok', 'db:connect', 'reachable'),
@@ -103,7 +110,7 @@ def main():
     worst = max((r[0] for r in results), key=lambda s: SEV_RANK[s], default='ok')
 
     payload = {
-        'ts': datetime.now().isoformat(),
+        'ts': datetime.now(timezone.utc).isoformat(),
         'overall': worst,
         'checks': [{'severity': s, 'name': n, 'detail': d} for s, n, d in results],
     }

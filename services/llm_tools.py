@@ -27,15 +27,41 @@ def _vec_to_text(vec: list[float]) -> str:
     return "[" + ",".join(str(f) for f in vec) + "]"
 
 
+# Bounds for LLM-supplied arguments. Tool args come from the model, which
+# reads attacker-influenced log text, so never trust them unclamped.
+MAX_LIMIT = 200
+MAX_HOURS = 720
+MAX_WINDOW_MINUTES = 120
+
+
+def _clamp_int(value: Any, default: int, lo: int, hi: int) -> int:
+    """Coerce an LLM-supplied value to int and clamp it to [lo, hi]."""
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, v))
+
+
 def truncate_result(result: list[dict], max_chars: int = MAX_TOOL_RESULT_CHARS) -> str:
-    """JSON-serialize a result list, truncating if too long."""
+    """JSON-serialize a result list, dropping whole trailing items if too long.
+
+    Always returns valid JSON so downstream parsing (_extract_sources) works.
+    When items are dropped, a final {"_truncated": ...} marker item is appended.
+    """
     text = json.dumps(result, default=str)
-    if len(text) <= max_chars:
+    if len(text) <= max_chars or not isinstance(result, list):
         return text
-    # Truncate: include as many full items as fit
     total = len(result)
-    truncated = text[:max_chars]
-    return truncated + f"... (truncated, {total} total results)"
+    kept: list = []
+    for item in result:
+        candidate = kept + [item, {"_truncated": True, "shown": len(kept) + 1, "total": total}]
+        if len(json.dumps(candidate, default=str)) > max_chars:
+            break
+        kept.append(item)
+    kept.append({"_truncated": True, "shown": len(kept), "total": total,
+                 "note": f"truncated, {total} total results"})
+    return json.dumps(kept, default=str)
 
 
 # =============================================================================
@@ -196,7 +222,7 @@ async def execute_search_templates(
     query = args.get("query", "")
     service = args.get("service")
     level = args.get("level")
-    limit = args.get("limit", 5)
+    limit = _clamp_int(args.get("limit"), 5, 1, MAX_LIMIT)
 
     query_embedding = await embed_text(http_client, query)
     if query_embedding is None:
@@ -224,8 +250,8 @@ async def execute_search_templates(
         ORDER BY distance
         LIMIT %s
     """
-    params.append(query_blob)
-    params.append(limit)
+    # SELECT's VEC_FromText(%s) precedes the WHERE placeholders
+    params = [query_blob] + params + [limit]
 
     async with pool.acquire() as conn:
         async with conn.cursor() as cursor:
@@ -252,7 +278,7 @@ async def execute_query_logs(pool, args: dict) -> list[dict]:
     level = args.get("level")
     start_time = args.get("start_time")
     end_time = args.get("end_time")
-    limit = args.get("limit", 20)
+    limit = _clamp_int(args.get("limit"), 20, 1, MAX_LIMIT)
 
     where_clauses = []
     params: list[Any] = []
@@ -305,8 +331,8 @@ async def execute_query_logs(pool, args: dict) -> list[dict]:
 async def execute_get_template_stats(pool, args: dict) -> list[dict]:
     """Template frequency over a time window."""
     service = args.get("service")
-    hours = args.get("hours", 24)
-    limit = args.get("limit", 20)
+    hours = _clamp_int(args.get("hours"), 24, 1, MAX_HOURS)
+    limit = _clamp_int(args.get("limit"), 20, 1, MAX_LIMIT)
 
     cutoff = datetime.utcnow() - timedelta(hours=hours)
 
@@ -351,7 +377,7 @@ async def execute_get_template_stats(pool, args: dict) -> list[dict]:
 
 async def execute_get_service_overview(pool, args: dict) -> list[dict]:
     """High-level summary of all services."""
-    hours = args.get("hours", 24)
+    hours = _clamp_int(args.get("hours"), 24, 1, MAX_HOURS)
     cutoff = datetime.utcnow() - timedelta(hours=hours)
 
     sql = """
@@ -388,7 +414,7 @@ async def execute_get_service_overview(pool, args: dict) -> list[dict]:
 async def execute_get_log_context(pool, args: dict) -> list[dict]:
     """Surrounding logs for a specific event (temporal neighborhood)."""
     event_id = args.get("event_id")
-    window_minutes = args.get("window_minutes", 5)
+    window_minutes = _clamp_int(args.get("window_minutes"), 5, 1, MAX_WINDOW_MINUTES)
 
     if event_id is None:
         return [{"error": "event_id is required"}]

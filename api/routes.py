@@ -68,7 +68,8 @@ async def _check_hash_column_exists() -> bool:
         logger.info("Schema check: log_hash column %s", 'exists' if _has_hash_column else 'missing')
     except Exception as e:
         logger.warning("Failed to check schema, assuming no hash column: %s", e)
-        _has_hash_column = False
+        # Don't cache a failed check — retry on the next request
+        return False
 
     return _has_hash_column
 
@@ -96,7 +97,8 @@ async def _check_embedding_column_exists() -> bool:
                      'exists' if _has_embedding_column else 'missing')
     except Exception as e:
         logger.warning("Failed to check schema, assuming no embedding column: %s", e)
-        _has_embedding_column = False
+        # Don't cache a failed check — retry on the next request
+        return False
 
     return _has_embedding_column
 
@@ -123,7 +125,8 @@ async def _check_templates_table_exists() -> bool:
                      'exists' if _has_templates_table else 'missing')
     except Exception as e:
         logger.warning("Failed to check schema, assuming no templates table: %s", e)
-        _has_templates_table = False
+        # Don't cache a failed check — retry on the next request
+        return False
 
     return _has_templates_table
 
@@ -151,7 +154,8 @@ async def _check_template_id_column_exists() -> bool:
                      'exists' if _has_template_id_column else 'missing')
     except Exception as e:
         logger.warning("Failed to check schema, assuming no template_id column: %s", e)
-        _has_template_id_column = False
+        # Don't cache a failed check — retry on the next request
+        return False
 
     return _has_template_id_column
 
@@ -197,11 +201,12 @@ async def _resolve_templates(request: Request, pool, logs: list[LogEventCreate])
     """Resolve template IDs for a batch of logs via canonicalization + cache + DB.
 
     Returns:
-        list of template_id (int or None) for each log in the batch.
+        (template_ids, template_hashes): per-log template id and hash
+        (None where unresolved). Hashes feed _update_template_counters.
     """
     template_cache = getattr(request.app.state, "template_cache", None)
     if template_cache is None:
-        return [None] * len(logs)
+        return [None] * len(logs), [None] * len(logs)
 
     # Step 1: Canonicalize each message, compute template_hash
     keys = []
@@ -276,7 +281,7 @@ async def _resolve_templates(request: Request, pool, logs: list[LogEventCreate])
                                      embedding_vector, canon_version, canon_hash,
                                      first_seen, last_seen, event_count, source_hosts)
                                 VALUES (%s, %s, %s, %s, VEC_FromText(%s), %s, %s,
-                                        %s, %s, 1, %s)
+                                        %s, %s, 0, %s)
                             """, (
                                 t_hash, canonical, log.service, log.level.value,
                                 emb_text, version, canon_hash_val,
@@ -290,45 +295,58 @@ async def _resolve_templates(request: Request, pool, logs: list[LogEventCreate])
             except Exception as e:
                 logger.warning("Template insert failed: %s", e)
 
-    # Step 8: Batch update event_count and last_seen on existing templates
-    # (collect hashes that were already in DB, not newly created)
-    existing_hashes = [
-        (t_hash, keys_entry[3].timestamp)  # log.timestamp
-        for keys_entry in keys
-        for t_hash_check in [keys_entry[1]]
-        if t_hash_check in resolved
-        for t_hash in [t_hash_check]
-    ]
-    if existing_hashes:
-        try:
-            async with pool.acquire() as conn:
-                async with conn.cursor() as cursor:
-                    # Count per template_hash for this batch
-                    hash_counts: dict[str, tuple[int, datetime]] = {}
-                    for t_hash, ts in existing_hashes:
-                        if t_hash in hash_counts:
-                            cnt, max_ts = hash_counts[t_hash]
-                            hash_counts[t_hash] = (cnt + 1, max(max_ts, ts))
-                        else:
-                            hash_counts[t_hash] = (1, ts)
+    # Map back to per-log template IDs (and hashes, for counter updates)
+    ids = [resolved.get(t_hash) for _, t_hash, _, _ in keys]
+    hashes = [t_hash if t_hash in resolved else None for _, t_hash, _, _ in keys]
+    return ids, hashes
 
-                    for t_hash, (cnt, max_ts) in hash_counts.items():
-                        await cursor.execute("""
-                            UPDATE log_templates
-                            SET event_count = event_count + %s,
-                                last_seen = GREATEST(last_seen, %s)
-                            WHERE template_hash = %s
-                        """, (cnt, max_ts, t_hash))
-                await conn.commit()
-        except Exception as e:
-            logger.warning("Template counter update failed: %s", e)
 
-    # Map back to per-log template IDs
-    result = []
-    for canonical, t_hash, version, log in keys:
-        result.append(resolved.get(t_hash))
+async def _find_existing_log_hashes(pool, log_hashes: list[str]) -> set[str]:
+    """Return the subset of log_hashes already present in log_events."""
+    unique = list(dict.fromkeys(log_hashes))
+    if not unique:
+        return set()
+    placeholders = ", ".join(["%s"] * len(unique))
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(
+                f"SELECT log_hash FROM log_events WHERE log_hash IN ({placeholders})",
+                unique,
+            )
+            rows = await cursor.fetchall()
+    return {row["log_hash"] for row in rows}
 
-    return result
+
+async def _update_template_counters(pool, logs, template_hashes, inserted_mask) -> None:
+    """Increment event_count / last_seen only for log rows that were actually inserted.
+
+    A template created in this batch starts at event_count=0, so every
+    inserted row is counted exactly once and dedup-skipped rows never are.
+    """
+    counts: dict[str, tuple[int, datetime]] = {}
+    for log, t_hash, inserted in zip(logs, template_hashes, inserted_mask):
+        if not inserted or t_hash is None:
+            continue
+        if t_hash in counts:
+            cnt, max_ts = counts[t_hash]
+            counts[t_hash] = (cnt + 1, max(max_ts, log.timestamp))
+        else:
+            counts[t_hash] = (1, log.timestamp)
+    if not counts:
+        return
+    try:
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cursor:
+                for t_hash, (cnt, max_ts) in counts.items():
+                    await cursor.execute("""
+                        UPDATE log_templates
+                        SET event_count = event_count + %s,
+                            last_seen = GREATEST(last_seen, %s)
+                        WHERE template_hash = %s
+                    """, (cnt, max_ts, t_hash))
+            await conn.commit()
+    except Exception as e:
+        logger.warning("Template counter update failed: %s", e)
 
 
 @router.post(
@@ -354,9 +372,10 @@ async def ingest_logs(request: Request, body: LogIngestRequest):
 
     # Resolve templates if the table exists
     template_ids: list[Optional[int]] = [None] * len(body.logs)
+    template_hashes: list[Optional[str]] = [None] * len(body.logs)
     skip_per_row_embedding = False
     if has_templates and has_template_id:
-        template_ids = await _resolve_templates(request, pool, body.logs)
+        template_ids, template_hashes = await _resolve_templates(request, pool, body.logs)
         # If templates are active, skip per-row embedding on log_events
         skip_per_row_embedding = True
 
@@ -397,6 +416,24 @@ async def ingest_logs(request: Request, body: LogIngestRequest):
             except Exception as e:
                 logger.warning("Batch embedding failed, continuing without: %s", e)
 
+    # Work out which rows INSERT IGNORE will actually insert, so template
+    # counters only count new events (not dedup-skipped resends).
+    inserted_mask = [True] * len(body.logs)
+    if has_hash_column and any(h is not None for h in template_hashes):
+        log_hashes = [compute_log_hash(log) for log in body.logs]
+        try:
+            existing = await _find_existing_log_hashes(pool, log_hashes)
+        except Exception as e:
+            logger.warning("Existing log_hash lookup failed, skipping counter update: %s", e)
+            existing = None
+        if existing is None:
+            inserted_mask = [False] * len(body.logs)
+        else:
+            seen: set[str] = set()
+            for i, h in enumerate(log_hashes):
+                inserted_mask[i] = h not in existing and h not in seen
+                seen.add(h)
+
     try:
         async with pool.acquire() as conn:
             async with conn.cursor() as cursor:
@@ -412,6 +449,9 @@ async def ingest_logs(request: Request, body: LogIngestRequest):
                 duplicates = len(rows) - ingested if has_hash_column else 0
 
             await conn.commit()
+
+        if any(h is not None for h in template_hashes):
+            await _update_template_counters(pool, body.logs, template_hashes, inserted_mask)
 
         logger.info("Ingested %d logs (%d duplicates skipped)", ingested, duplicates)
 

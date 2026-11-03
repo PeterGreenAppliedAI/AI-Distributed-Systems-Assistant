@@ -69,6 +69,20 @@ def create_index():
 
     try:
         with conn.cursor() as cursor:
+            # Template mode (migration 003) inserts log_events rows WITHOUT
+            # embedding_vector — embeddings live on log_templates instead.
+            # Making this column NOT NULL would make every template-mode
+            # insert fail with error 1364, so refuse.
+            cursor.execute("""
+                SELECT COUNT(*) as cnt FROM information_schema.tables
+                WHERE table_schema = DATABASE() AND table_name = 'log_templates'
+            """)
+            if cursor.fetchone()['cnt'] > 0:
+                print("Refusing: log_templates exists, so ingest runs in template mode and")
+                print("writes log_events rows with NULL embedding_vector. A NOT NULL column")
+                print("+ HNSW index here would break all ingest. Use /search/templates instead.")
+                return False
+
             # Check how many NULLs remain
             cursor.execute("SELECT COUNT(*) as cnt FROM log_events WHERE embedding_vector IS NULL")
             nulls = cursor.fetchone()['cnt']

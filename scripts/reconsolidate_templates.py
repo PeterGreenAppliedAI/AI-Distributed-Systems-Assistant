@@ -60,6 +60,17 @@ def embed_batch_sync(client: httpx.Client, texts: list[str]) -> list[list[float]
         return [None] * len(texts)
 
 
+API_HEALTH_URL = os.getenv("RECONSOLIDATE_API_HEALTH_URL", "http://localhost:8000/health")
+
+
+def _api_is_running() -> bool:
+    try:
+        httpx.get(API_HEALTH_URL, timeout=2)
+        return True
+    except Exception:
+        return False
+
+
 def reconsolidate(delay: float = 2.0, dry_run: bool = False, embed_batch_size: int = 20):
     conn = get_sync_connection()
     http_client = httpx.Client()
@@ -69,7 +80,7 @@ def reconsolidate(delay: float = 2.0, dry_run: bool = False, embed_batch_size: i
     with conn.cursor() as cur:
         cur.execute(
             "SELECT id, template_hash, canonical_text, service, level, "
-            "event_count, source_hosts FROM log_templates"
+            "event_count, source_hosts, first_seen, last_seen FROM log_templates"
         )
         templates = cur.fetchall()
     print(f"Loaded {len(templates)} templates")
@@ -117,6 +128,7 @@ def reconsolidate(delay: float = 2.0, dry_run: bool = False, embed_batch_size: i
 
     # Phase 1: Merge groups — pick survivor, re-link events, delete losers
     total_relinked = 0
+    total_relink_failures = 0
     total_deleted = 0
     total_embedded = 0
 
@@ -131,8 +143,22 @@ def reconsolidate(delay: float = 2.0, dry_run: bool = False, embed_batch_size: i
         victim_ids = [v["id"] for v in victims]
         new_canon = survivor["_new_canon"]
         total_events = sum(r["event_count"] for r in group)
+        merged_first = min(r["first_seen"] for r in group)
+        merged_last = max(r["last_seen"] for r in group)
+        merged_hosts: list[str] = []
+        for r in group:
+            try:
+                hosts = json.loads(r["source_hosts"] or "[]")
+            except (TypeError, ValueError):
+                hosts = []
+            for h in hosts:
+                if h not in merged_hosts:
+                    merged_hosts.append(h)
 
-        # Re-link log_events from victims to survivor
+        # Re-link log_events from victims to survivor. A victim is only
+        # deleted if its re-link succeeded — otherwise events would point at
+        # a deleted template id (there is no FK to catch it).
+        relinked_ok: list[int] = []
         for vid in victim_ids:
             for attempt in range(3):
                 try:
@@ -144,17 +170,21 @@ def reconsolidate(delay: float = 2.0, dry_run: bool = False, embed_batch_size: i
                         )
                         total_relinked += cur.rowcount
                     conn.commit()
+                    relinked_ok.append(vid)
                     break
                 except Exception as e:
                     conn.rollback()
                     if attempt < 2 and ("1020" in str(e) or "1213" in str(e)):
                         time.sleep(0.2)
                     else:
-                        print(f"  Re-link failed for victim {vid}: {e}")
+                        print(f"  Re-link failed for victim {vid}: {e} — keeping it")
                         break
+        failed_relinks = [v for v in victim_ids if v not in relinked_ok]
+        if failed_relinks:
+            total_relink_failures += len(failed_relinks)
 
-        # Delete victims
-        for vid in victim_ids:
+        # Delete only victims whose events were re-linked
+        for vid in relinked_ok:
             for attempt in range(3):
                 try:
                     with conn.cursor() as cur:
@@ -180,9 +210,11 @@ def reconsolidate(delay: float = 2.0, dry_run: bool = False, embed_batch_size: i
                     cur.execute(
                         "UPDATE log_templates SET canonical_text = %s, "
                         "template_hash = %s, canon_hash = %s, "
-                        "event_count = %s WHERE id = %s",
+                        "event_count = %s, first_seen = %s, last_seen = %s, "
+                        "source_hosts = %s WHERE id = %s",
                         (new_canon, new_hash, canon_hash_val,
-                         total_events, survivor["id"]),
+                         total_events, merged_first, merged_last,
+                         json.dumps(merged_hosts), survivor["id"]),
                     )
                 conn.commit()
                 break
@@ -291,6 +323,9 @@ def reconsolidate(delay: float = 2.0, dry_run: bool = False, embed_batch_size: i
     print(f"  Merged: {len(merge_groups)} groups")
     print(f"  Deleted: {total_deleted} redundant templates")
     print(f"  Re-linked: {total_relinked} events")
+    if total_relink_failures:
+        print(f"  Re-link FAILURES: {total_relink_failures} victims kept "
+              f"(re-run to retry)")
     print(f"  Re-embedded: {total_embedded} templates")
     print(f"  Solo updated: {solo_updated}")
 
@@ -306,10 +341,19 @@ if __name__ == "__main__":
                         help="Seconds between embedding batches (default 2)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Preview only, no changes")
+    parser.add_argument("--allow-live-api", action="store_true",
+                        help="Run even if the API is up (unsafe: stale template cache)")
     parser.add_argument("--embed-batch-size", type=int, default=20,
                         help="Embeddings per batch (default 20)")
     args = parser.parse_args()
 
     print(f"Template reconsolidation (delay={args.delay}s, "
           f"dry_run={args.dry_run})")
+    if not args.dry_run and not args.allow_live_api and _api_is_running():
+        print(f"Refusing: the API answers at {API_HEALTH_URL}. Its in-memory "
+              "TemplateCache maps old template hashes to ids this script deletes,\n"
+              "so live ingest would link events to deleted templates.\n"
+              "Stop it first (sudo systemctl stop devmesh-api), or pass "
+              "--allow-live-api if you know it isn't ingesting.")
+        sys.exit(2)
     reconsolidate(args.delay, args.dry_run, args.embed_batch_size)

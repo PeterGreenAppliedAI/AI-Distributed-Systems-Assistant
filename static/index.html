@@ -4,7 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>DevMesh Log Analyzer</title>
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<!-- Vendored + pinned (no CDN): marked 15.0.12, DOMPurify 3.2.6 -->
+<script src="/static/vendor/marked.min.js"></script>
+<script src="/static/vendor/purify.min.js"></script>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -195,6 +197,14 @@
     document.getElementById('filters').classList.toggle('open');
   }
 
+  const API_KEY_STORAGE = 'devmesh_api_key';
+  function getApiKey() {
+    try { return localStorage.getItem(API_KEY_STORAGE) || ''; } catch { return ''; }
+  }
+  function setApiKey(k) {
+    try { k ? localStorage.setItem(API_KEY_STORAGE, k) : localStorage.removeItem(API_KEY_STORAGE); } catch {}
+  }
+
   function getHistory() {
     try { return JSON.parse(localStorage.getItem(HISTORY_KEY)) || []; }
     catch { return []; }
@@ -213,7 +223,7 @@
     const h = getHistory();
     if (!h.length) { list.innerHTML = '<div style="font-size:0.8rem;color:#4a5568;">No queries yet</div>'; return; }
     list.innerHTML = h.map(q =>
-      `<div class="history-item" onclick="loadQuery(this)" title="${q.replace(/"/g, '&quot;')}">${q}</div>`
+      `<div class="history-item" onclick="loadQuery(this)" title="${escapeHtml(q)}">${escapeHtml(q)}</div>`
     ).join('');
   }
 
@@ -223,7 +233,7 @@
   }
 
   function escapeHtml(s) {
-    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
   async function submitAnalysis() {
@@ -252,11 +262,22 @@
     resultEl.classList.remove('visible');
 
     try {
-      const resp = await fetch('/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
+      const doFetch = () => {
+        const headers = { 'Content-Type': 'application/json' };
+        const key = getApiKey();
+        if (key) headers['X-API-Key'] = key;
+        return fetch('/analyze', { method: 'POST', headers, body: JSON.stringify(body) });
+      };
+      let resp = await doFetch();
+      if (resp.status === 401) {
+        // Auth is enabled server-side: ask for the key once, remember it, retry
+        const entered = window.prompt('This API requires an API key (X-API-Key):');
+        if (entered) {
+          setApiKey(entered.trim());
+          resp = await doFetch();
+        }
+        if (resp.status === 401) setApiKey('');
+      }
 
       if (!resp.ok) {
         const errData = await resp.json().catch(() => null);
@@ -280,13 +301,20 @@
     const resultEl = document.getElementById('result');
 
     // Explanation (markdown)
-    document.getElementById('explanation').innerHTML = marked.parse(data.explanation || '');
+    // LLM output can echo attacker-controlled log text — always sanitize.
+    const explanationEl = document.getElementById('explanation');
+    const raw = data.explanation || '';
+    if (window.marked && window.DOMPurify) {
+      explanationEl.innerHTML = DOMPurify.sanitize(marked.parse(raw));
+    } else {
+      explanationEl.textContent = raw;  // fail safe, never unsanitized HTML
+    }
 
     // Meta badges
     const meta = document.getElementById('meta');
     const badges = [];
     if (data.confidence) badges.push(`Confidence: <strong>${escapeHtml(data.confidence)}</strong>`);
-    if (data.iterations != null) badges.push(`Iterations: <strong>${data.iterations}</strong>`);
+    if (data.iterations != null) badges.push(`Iterations: <strong>${escapeHtml(data.iterations)}</strong>`);
     if (data.model) badges.push(`Model: <strong>${escapeHtml(data.model)}</strong>`);
     meta.innerHTML = badges.map(b => `<span class="meta-badge">${b}</span>`).join('');
 
@@ -308,7 +336,7 @@
     const srcSection = document.getElementById('sourcesSection');
     if (data.sources && data.sources.length) {
       srcSection.innerHTML = `<details>
-        <summary>Sources (${data.sources.length} cited events)</summary>
+        <summary>Sources (${data.sources.length} retrieved records)</summary>
         ${data.sources.map(s => `<div class="source-item">${escapeHtml(JSON.stringify(s, null, 2))}</div>`).join('')}
       </details>`;
     } else {

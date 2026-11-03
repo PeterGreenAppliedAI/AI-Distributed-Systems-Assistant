@@ -5,6 +5,7 @@ AI-Native Observability for Local Infrastructure
 
 import os
 import json
+import asyncio
 import logging
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
@@ -15,14 +16,15 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 
+# Load .env BEFORE importing app modules: services.llm and others read
+# GATEWAY_URL / LLM_MODEL etc. at import time.
+load_dotenv()
+
 from models.schemas import HealthResponse, InfoResponse, ErrorResponse
 from db.database import init_pool, close_pool, async_test_connection, test_connection
 from api.routes import router as api_router
 from api.auth import APIKeyMiddleware
 from errors import DevMeshError
-
-# Load environment variables
-load_dotenv()
 
 # ---------------------------------------------------------------------------
 # Structured JSON logging (N1)
@@ -54,12 +56,28 @@ async def lifespan(app: FastAPI):
     """Lifecycle manager for FastAPI app."""
     logger.info("DevMesh Platform Starting")
 
-    # Initialise async DB pool (H1, H2)
+    # Initialise async DB pool (H1, H2). If the DB is unreachable at boot,
+    # keep retrying in the background instead of staying broken until restart.
+    pool_retry_task = None
     try:
         await init_pool()
         logger.info("Database pool initialised")
     except Exception as e:
-        logger.error("Failed to initialise DB pool: %s", e)
+        logger.error("Failed to initialise DB pool: %s — retrying in background", e)
+
+        async def _retry_pool():
+            delay = 5
+            while True:
+                await asyncio.sleep(delay)
+                try:
+                    await init_pool()
+                    logger.info("Database pool initialised (after retry)")
+                    return
+                except Exception as retry_err:
+                    logger.warning("DB pool retry failed: %s", retry_err)
+                    delay = min(delay * 2, 60)
+
+        pool_retry_task = asyncio.create_task(_retry_pool())
 
     # Create shared httpx client for embedding service
     embedding_timeout = int(os.getenv('EMBEDDING_TIMEOUT', '120'))
@@ -96,6 +114,8 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    if pool_retry_task is not None and not pool_retry_task.done():
+        pool_retry_task.cancel()
     await app.state.http_client.aclose()
     logger.info("HTTP client closed")
     await close_pool()
