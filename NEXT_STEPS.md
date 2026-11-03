@@ -162,6 +162,21 @@ Fixed (tests in `tests/test_review_fixes.py`, 12 new, 126 total):
 - [x] Runbook: `/search/templates?query=&limit=`, `ADD VECTOR INDEX` (documented form)
 - [x] README/PROJECT_SUMMARY: FK claim, TTL wording, test/line counts, stale-count notes
 
+Follow-up review (same day), fixed, 133 tests total:
+- [x] HTTP `/search/templates` + `/search/logs` had the same placeholder-order bug
+      as the LLM tool (filtered search bound the filter to `VEC_FromText`). Fixed + tested
+- [x] `/search/logs` marked deprecated (template mode leaves new rows' vectors NULL)
+- [x] Schema checks fail closed (503) instead of silently using the legacy ingest path
+- [x] Shutdown awaits the cancelled pool-retry task (no leaked pool)
+- [x] Manual tar deploy docs (README, below) include `shipper/transforms.py`
+- [x] `.env.example` has LLM settings + UI API-key note
+- [x] `reconsolidate_templates.py --recount-only`: heals event_count drift, safe with API up
+- [x] Tests for drain script, healthcheck staleness, HTTP search param order
+
+Known, accepted: template counters can drift. Two concurrent ingests of the same
+new log can both count it (the pre-check runs before INSERT IGNORE), and a failed
+lookup or update undercounts. Heal with `--recount-only`.
+
 Still open:
 - [ ] Re-measure events/templates/compression once DB is back; replace stale doc numbers
 - [ ] Embedding calls unchunked; sequential fallback still 120 s/text timeout
@@ -254,7 +269,7 @@ until MariaDB couldn't autoextend further.
 - [x] 5 LLM tools (`search_templates`, `query_logs`, `get_template_stats`, `get_service_overview`, `get_log_context`)
 - [x] LLM orchestration loop (`services/llm.py`) with Ollama `/api/chat` tool calling
 - [x] `POST /analyze` endpoint wired up in `api/routes.py`
-- [x] 26 new tests (code + tests landed in fea727c, 2026-11-03; 126 total after review fixes)
+- [x] 26 new tests (code + tests landed in fea727c, 2026-11-03; 133 total after review fixes)
 - [x] End-to-end validation with live Ollama + `nemotron-3-nano:30b`
 - [x] Frontend UI (`/ui` → `static/index.html`) — dark theme, filters, markdown rendering, query history
 - [x] Two-phase synthesis — separate tool-calling loop from analysis generation
@@ -481,6 +496,7 @@ tar czf /tmp/devmesh-shipper.tar.gz \
     shipper/log_shipper_daemon.py \
     shipper/filter_config.py \
     shipper/filter_config.yaml \
+    shipper/transforms.py \
     deploy/install_shipper.sh
 
 # Copy and install on target

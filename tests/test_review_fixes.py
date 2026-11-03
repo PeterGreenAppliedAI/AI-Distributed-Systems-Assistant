@@ -185,12 +185,47 @@ async def test_same_template_different_events_counted(template_client):
 # =============================================================================
 
 @pytest.mark.asyncio
-async def test_failed_schema_check_not_cached():
+async def test_failed_schema_check_fails_closed_and_not_cached():
+    from errors import DatabaseConnectionError
     _reset_schema_cache()
     with patch("api.routes.get_pool", side_effect=RuntimeError("pool not initialised")):
-        assert await api.routes._check_templates_table_exists() is False
+        with pytest.raises(DatabaseConnectionError):
+            await api.routes._check_templates_table_exists()
     assert api.routes._has_templates_table is None  # retried next time
     _reset_schema_cache()
+
+
+@pytest.mark.asyncio
+async def test_ingest_returns_503_when_schema_check_fails():
+    """Must not silently fall back to the duplicate-prone legacy ingest path."""
+    class FlakySchemaCursor(FakeCursor):
+        async def execute(self, sql, params=None):
+            if "information_schema" in sql:
+                raise RuntimeError("transient information_schema failure")
+            await super().execute(sql, params)
+
+    class FlakyConn(FakeConn):
+        def cursor(self, *a, **kw):
+            return FlakySchemaCursor(self.db)
+
+    class FlakyPool(FakePool):
+        def acquire(self):
+            return FlakyConn(self.db)
+
+    db = FakeDB()
+    _reset_schema_cache()
+    with patch("api.routes.get_pool", return_value=FlakyPool(db)):
+        from main import app
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            r = await c.post("/ingest/logs", json={"logs": [_log()]})
+    assert r.status_code == 503, r.text
+    assert not db.log_hashes  # nothing written via the degraded path
+    _reset_schema_cache()
+
+
+# =============================================================================
+# HTTP search routes: placeholder order with filters
+# =============================================================================
 
 
 # =============================================================================
@@ -336,3 +371,155 @@ def test_ui_has_no_external_scripts_and_sanitizes():
     assert not re.search(r'<script[^>]+src="https?://', html)
     assert "DOMPurify.sanitize(marked.parse(" in html
     assert "innerHTML = marked.parse" not in html
+
+
+# =============================================================================
+# HTTP search routes: VEC_FromText placeholder must receive the vector
+# =============================================================================
+
+class SchemaAwareRecordingCursor(RecordingCursor):
+    async def execute(self, sql, params=None):
+        self.executed.append((sql, params))
+        self.results = [{"cnt": 1}] if "information_schema" in sql else []
+
+
+def _search_pool():
+    return RecordingPool(SchemaAwareRecordingCursor())
+
+
+def _vector_sql(cur):
+    return next((sql, params) for sql, params in cur.executed if "VEC_DISTANCE_COSINE" in sql)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path,extra", [
+    ("/search/templates", {"service": "docker.service", "level": "ERROR"}),
+    ("/search/logs", {"service": "docker.service", "host": "gpu-node"}),
+])
+async def test_http_search_param_order_with_filters(path, extra):
+    pool = _search_pool()
+    _reset_schema_cache()
+    with patch("api.routes.get_pool", return_value=pool), \
+         patch("api.routes.embed_text", new=AsyncMock(return_value=[0.5, 0.5])):
+        from main import app
+        app.state.http_client = object()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            r = await c.get(path, params={"query": "container restart", "limit": 5, **extra})
+    assert r.status_code == 200, r.text
+    sql, params = _vector_sql(pool.cur)
+    assert params[0] == "[0.5,0.5]", params          # vector goes to VEC_FromText
+    assert params[-1] == 5, params                   # limit goes to LIMIT
+    for v in extra.values():
+        assert v in params[1:-1]
+    _reset_schema_cache()
+
+
+# =============================================================================
+# Ops scripts: drain + healthcheck
+# =============================================================================
+
+import subprocess
+import sys
+import threading
+import http.server
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _stub_server(expect_key="k"):
+    hits = []
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            ok = self.headers.get("X-API-Key") == expect_key
+            hits.append((ok, len(body["logs"])))
+            self.send_response(201 if ok else 401)
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, hits
+
+
+def _run_drain(spool, port, *extra):
+    return subprocess.run(
+        [sys.executable, os.path.join(ROOT, "scripts", "drain_failed_batches.py"),
+         "--file", str(spool), "--api", f"http://127.0.0.1:{port}/", "--sleep", "0", *extra],
+        capture_output=True, text=True, timeout=30, cwd=ROOT,
+    )
+
+
+def test_drain_full_run(tmp_path):
+    srv, hits = _stub_server()
+    try:
+        spool = tmp_path / "failed_batches.jsonl"
+        spool.write_text('{"logs":[{"m":1}]}\nNOT JSON\n{"logs":[]}\n{"logs":[{"m":2},{"m":3}]}\n')
+        (tmp_path / "failed_batches.jsonl.drained").write_text("old\n")
+        r = _run_drain(spool, srv.server_port, "--api-key", "k")
+        assert r.returncode == 0, r.stderr
+        assert hits == [(True, 1), (True, 2)]
+        assert not spool.exists()
+        assert (tmp_path / "failed_batches.jsonl.drained").read_text() == "old\n"  # not clobbered
+        assert (tmp_path / "failed_batches.jsonl.rejected").read_text() == "NOT JSON\n"
+        assert len(list(tmp_path.glob("failed_batches.jsonl.drained.*"))) == 1
+    finally:
+        srv.shutdown()
+
+
+def test_drain_stops_on_401_and_resumes(tmp_path):
+    srv, hits = _stub_server()
+    try:
+        spool = tmp_path / "failed_batches.jsonl"
+        spool.write_text('{"logs":[{"m":1}]}\n{"logs":[{"m":2}]}\n')
+        r = _run_drain(spool, srv.server_port, "--api-key", "wrong")
+        assert r.returncode == 2 and "401" in r.stderr
+        draining = tmp_path / "failed_batches.jsonl.draining"
+        assert draining.exists()  # nothing lost
+        r = _run_drain(spool, srv.server_port, "--api-key", "k")
+        assert r.returncode == 0, r.stderr
+        assert [h for h in hits if h[0]] == [(True, 1), (True, 1)]
+    finally:
+        srv.shutdown()
+
+
+def test_drain_limit_then_resume(tmp_path):
+    srv, hits = _stub_server()
+    try:
+        spool = tmp_path / "failed_batches.jsonl"
+        spool.write_text("".join(f'{{"logs":[{{"m":{i}}}]}}\n' for i in range(3)))
+        r = _run_drain(spool, srv.server_port, "--api-key", "k", "--limit", "2")
+        assert r.returncode == 0 and len(hits) == 2
+        assert (tmp_path / "failed_batches.jsonl.draining").exists()
+        r = _run_drain(spool, srv.server_port, "--api-key", "k")
+        assert r.returncode == 0 and len(hits) == 3   # no resends
+        assert list(tmp_path.glob("*.drained"))
+    finally:
+        srv.shutdown()
+
+
+def test_healthcheck_staleness_uses_db_side_age():
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    import healthcheck
+
+    class Cur:
+        def execute(self, sql):
+            assert "UTC_TIMESTAMP" in sql
+        def fetchone(self):
+            return {"mx": datetime(2026, 11, 3, 3, 0), "age": 2000.0}
+
+    class Conn:
+        def cursor(self):
+            return Cur()
+        def close(self):
+            pass
+
+    with patch("db.database.get_sync_connection", return_value=Conn()):
+        out = healthcheck.check_db_and_ingest()
+    sev = {name: s for s, name, _ in out}
+    assert sev["db:connect"] == "ok"
+    assert sev["ingest:staleness"] == "crit"   # 2000s >= 1800s

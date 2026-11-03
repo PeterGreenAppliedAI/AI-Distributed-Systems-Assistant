@@ -72,6 +72,9 @@ A local-first platform that:
 > Snapshot from early 2026 — **stale**. By the 2026-05-06 incident `log_events`
 > held ~29M rows / 35 GB and `log_templates` 22,595 live rows (see
 > `scripts/rebuild_template_vector_index.md`). Re-measure before quoting ratios.
+> The two figures don't conflict. They are different dates. Template-mode ingest
+> leaves `log_events.embedding_vector` NULL (vectors live on the ~22K templates),
+> so 35 GB / 29M rows ≈ 1.2 KB per row is plain text plus metadata, not 16 KB vectors.
 
 | Metric | Value |
 |--------|-------|
@@ -81,7 +84,7 @@ A local-first platform that:
 | Canonical templates | 5,713 |
 | Compression ratio | **157x** (899K → 5.7K patterns) |
 | Embedding dimensions | 4,096 |
-| Test suite | 126 tests, all passing (DB access mocked) |
+| Test suite | 133 tests, all passing (DB access mocked) |
 | Codebase | 42 Python files, ~4,600 lines production (~7,600 incl. tests/scripts) |
 | External API costs | **$0** (all inference local) |
 

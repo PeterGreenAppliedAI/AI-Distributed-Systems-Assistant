@@ -16,7 +16,7 @@
 - Hosts HTTP endpoints for:
   - Ingestion (`POST /ingest/logs`)
   - Query (`GET /query/logs`)
-  - Semantic search (`GET /search/logs`)
+  - Semantic search (`GET /search/logs` — deprecated, legacy raw-log vectors; use `/search/templates`)
   - Health checks (`GET /health`, `GET /info`)
 - Manages shared `httpx.AsyncClient` for embedding gateway calls
 - Centralized error handling with domain error types

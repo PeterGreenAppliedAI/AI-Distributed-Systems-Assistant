@@ -107,7 +107,7 @@ python -u shipper/log_shipper_daemon.py
 
 ### Query
 - `GET /query/logs` — Filter by service, host, level, time range
-- `GET /search/logs` — Semantic search: "find logs similar to this error"
+- `GET /search/logs` — **Deprecated.** Raw-log vector search; template-mode ingest leaves `embedding_vector` NULL on new rows, so it only covers backfilled history. Use `/search/templates`
 - `GET /search/templates` — Search canonical patterns, returns examples
 
 ### Analysis
@@ -227,6 +227,7 @@ tar czf /tmp/devmesh-shipper.tar.gz \
     shipper/log_shipper_daemon.py \
     shipper/filter_config.py \
     shipper/filter_config.yaml \
+    shipper/transforms.py \
     deploy/install_shipper.sh
 
 # Copy and install

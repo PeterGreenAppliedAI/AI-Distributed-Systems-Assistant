@@ -71,6 +71,24 @@ def _api_is_running() -> bool:
         return False
 
 
+def recount_only() -> None:
+    """Recompute log_templates.event_count from log_events.
+
+    Safe with the API running: it never changes template ids or hashes, so the
+    API's TemplateCache stays valid. Heals counter drift from concurrent
+    ingests or failed counter updates without an outage window.
+    """
+    conn = get_sync_connection()
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE log_templates t SET event_count = "
+            "(SELECT COUNT(*) FROM log_events WHERE template_id = t.id)"
+        )
+        print(f"Recounted event_count on {cur.rowcount} templates")
+    conn.commit()
+    conn.close()
+
+
 def reconsolidate(delay: float = 2.0, dry_run: bool = False, embed_batch_size: int = 20):
     conn = get_sync_connection()
     http_client = httpx.Client()
@@ -341,11 +359,17 @@ if __name__ == "__main__":
                         help="Seconds between embedding batches (default 2)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Preview only, no changes")
+    parser.add_argument("--recount-only", action="store_true",
+                        help="Only recompute event_count from log_events (safe with API running)")
     parser.add_argument("--allow-live-api", action="store_true",
                         help="Run even if the API is up (unsafe: stale template cache)")
     parser.add_argument("--embed-batch-size", type=int, default=20,
                         help="Embeddings per batch (default 20)")
     args = parser.parse_args()
+
+    if args.recount_only:
+        recount_only()
+        sys.exit(0)
 
     print(f"Template reconsolidation (delay={args.delay}s, "
           f"dry_run={args.dry_run})")

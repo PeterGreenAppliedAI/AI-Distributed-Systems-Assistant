@@ -6,6 +6,7 @@ AI-Native Observability for Local Infrastructure
 import os
 import json
 import asyncio
+import contextlib
 import logging
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
@@ -116,6 +117,10 @@ async def lifespan(app: FastAPI):
     # Shutdown
     if pool_retry_task is not None and not pool_retry_task.done():
         pool_retry_task.cancel()
+        # Wait for it to actually stop, so a pool created mid-cancel
+        # can't be assigned after close_pool() and leak connections.
+        with contextlib.suppress(asyncio.CancelledError):
+            await pool_retry_task
     await app.state.http_client.aclose()
     logger.info("HTTP client closed")
     await close_pool()

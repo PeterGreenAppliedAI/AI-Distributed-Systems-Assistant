@@ -67,9 +67,9 @@ async def _check_hash_column_exists() -> bool:
                 _has_hash_column = row['cnt'] > 0
         logger.info("Schema check: log_hash column %s", 'exists' if _has_hash_column else 'missing')
     except Exception as e:
-        logger.warning("Failed to check schema, assuming no hash column: %s", e)
-        # Don't cache a failed check — retry on the next request
-        return False
+        # Fail closed: don't cache, and don't silently fall back to the
+        # legacy (duplicate-prone) path — surface a 503 instead.
+        raise DatabaseConnectionError(f"Schema check failed: {e}")
 
     return _has_hash_column
 
@@ -96,9 +96,9 @@ async def _check_embedding_column_exists() -> bool:
         logger.info("Schema check: embedding_vector column %s",
                      'exists' if _has_embedding_column else 'missing')
     except Exception as e:
-        logger.warning("Failed to check schema, assuming no embedding column: %s", e)
-        # Don't cache a failed check — retry on the next request
-        return False
+        # Fail closed: don't cache, and don't silently fall back to the
+        # legacy (duplicate-prone) path — surface a 503 instead.
+        raise DatabaseConnectionError(f"Schema check failed: {e}")
 
     return _has_embedding_column
 
@@ -124,9 +124,9 @@ async def _check_templates_table_exists() -> bool:
         logger.info("Schema check: log_templates table %s",
                      'exists' if _has_templates_table else 'missing')
     except Exception as e:
-        logger.warning("Failed to check schema, assuming no templates table: %s", e)
-        # Don't cache a failed check — retry on the next request
-        return False
+        # Fail closed: don't cache, and don't silently fall back to the
+        # legacy (duplicate-prone) path — surface a 503 instead.
+        raise DatabaseConnectionError(f"Schema check failed: {e}")
 
     return _has_templates_table
 
@@ -153,9 +153,9 @@ async def _check_template_id_column_exists() -> bool:
         logger.info("Schema check: template_id column %s",
                      'exists' if _has_template_id_column else 'missing')
     except Exception as e:
-        logger.warning("Failed to check schema, assuming no template_id column: %s", e)
-        # Don't cache a failed check — retry on the next request
-        return False
+        # Fail closed: don't cache, and don't silently fall back to the
+        # legacy (duplicate-prone) path — surface a 503 instead.
+        raise DatabaseConnectionError(f"Schema check failed: {e}")
 
     return _has_template_id_column
 
@@ -563,6 +563,7 @@ async def query_logs(
     "/search/logs",
     response_model=List[LogSearchResult],
     tags=["Search"],
+    deprecated=True,
 )
 async def search_logs(
     request: Request,
@@ -623,8 +624,8 @@ async def search_logs(
                 ORDER BY distance
                 LIMIT %s
                 """
-                params.append(query_blob)
-                params.append(limit)
+                # SELECT's VEC_FromText(%s) precedes the WHERE placeholders
+                params = [query_blob] + params + [limit]
 
                 await cursor.execute(search_sql, params)
                 rows = await cursor.fetchall()
@@ -723,8 +724,8 @@ async def search_templates(
                 ORDER BY distance
                 LIMIT %s
                 """
-                params.append(query_blob)
-                params.append(limit)
+                # SELECT's VEC_FromText(%s) precedes the WHERE placeholders
+                params = [query_blob] + params + [limit]
 
                 await cursor.execute(search_sql, params)
                 template_rows = await cursor.fetchall()
