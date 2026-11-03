@@ -47,3 +47,6 @@ deploy/nodes.conf
 /test_realtime.py
 /test_realtime_v2.py
 /shipper/test_filter.py
+
+# Shipper runtime buffers (can be GBs during DB outages)
+shipper/failed_batches.jsonl*
