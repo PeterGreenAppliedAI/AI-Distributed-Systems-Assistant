@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""DevMesh platform self-monitor.
+"""DevMesh platform self-monitor. Linux only (systemd + syslog).
+
+The check functions import on any OS (for tests). Running the script needs Linux.
 
 Runs a fixed set of checks. Each check returns (ok: bool, name, detail).
 Failures are logged to syslog at WARNING (so the platform self-ingests)

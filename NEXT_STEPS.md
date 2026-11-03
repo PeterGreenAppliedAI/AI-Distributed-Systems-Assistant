@@ -11,8 +11,18 @@ Platform intentionally paused while MariaDB (10.0.0.18) is down. Done
 - dev-services: devmesh-shipper, devmesh-api, devmesh-healthcheck.timer, devmesh-ttl-cleanup.timer
 - shippers on gpu-node, gpu-node-3060, mariadb-vm, electrical-estimator, postgres-vm
 - teaching (192.168.1.227): not reached; node is offline. Its shipper is still
-  enabled and will start spooling when the node comes back. Disable it then. To resume: restore the DB,
-then re-enable services, then drain the spool (see 2026-11-03 outage section).
+  enabled and will start spooling when the node comes back. Disable it then.
+
+**Resume checklist (in order):**
+1. [ ] Restore MariaDB. Check disk and `.ibd` sizes first (see outage section)
+2. [ ] Re-measure events / templates / compression; replace stale doc numbers
+3. [ ] Smoke-test `RECOUNT_SQL` on a scratch copy before running `--recount-only` on ~29M rows
+       (so far it's only checked by string shape, never run on MariaDB)
+4. [ ] Real-DB integration test for the reconsolidate merge/delete/re-link path
+       (deletes templates and rewrites `template_id` with no FK; currently ~18% covered)
+5. [ ] Re-enable services (`systemctl enable --now ...` on dev-services and each node)
+6. [ ] Drain the spool: `python3 scripts/drain_failed_batches.py`
+7. [ ] Wire healthcheck alerts to a real channel (ntfy) before calling it "back"
 
 ## Future Ideas (not scheduled — after Phase 3/4)
 

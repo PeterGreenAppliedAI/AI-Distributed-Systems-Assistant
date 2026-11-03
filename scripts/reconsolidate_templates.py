@@ -95,7 +95,8 @@ def recount_only() -> None:
     conn = get_sync_connection()
     with conn.cursor() as cur:
         cur.execute(RECOUNT_SQL)
-        print(f"Recounted event_count on {cur.rowcount} templates")
+        # Multi-table UPDATE rowcount = rows whose value actually changed
+        print(f"Recount done: event_count changed on {cur.rowcount} templates")
     conn.commit()
     conn.close()
 
