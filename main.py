@@ -11,7 +11,8 @@ from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 
 from models.schemas import HealthResponse, InfoResponse, ErrorResponse
@@ -114,6 +115,14 @@ app.add_middleware(APIKeyMiddleware)
 
 # Include API routes
 app.include_router(api_router)
+
+# Static files and UI redirect
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+@app.get("/ui", include_in_schema=False)
+async def ui_redirect():
+    return RedirectResponse(url="/static/index.html")
 
 
 # =============================================================================

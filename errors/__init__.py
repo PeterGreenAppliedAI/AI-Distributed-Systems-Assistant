@@ -16,6 +16,9 @@ from .domain import (
     IngestionError,
     QueryError,
     ConfigurationError,
+    LLMError,
+    LLMTimeoutError,
+    LLMToolError,
 )
 
 __all__ = [
@@ -27,4 +30,7 @@ __all__ = [
     'IngestionError',
     'QueryError',
     'ConfigurationError',
+    'LLMError',
+    'LLMTimeoutError',
+    'LLMToolError',
 ]

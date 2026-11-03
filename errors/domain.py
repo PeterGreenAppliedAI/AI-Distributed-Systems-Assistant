@@ -117,3 +117,25 @@ class ConfigurationError(DevMeshError):
     def __init__(self, message: str, config_key: Optional[str] = None):
         details = {"config_key": config_key} if config_key else {}
         super().__init__(message, details)
+
+
+# =============================================================================
+# LLM Errors
+# =============================================================================
+
+class LLMError(DevMeshError):
+    """Base class for LLM-related errors (upstream gateway failures)."""
+    error_code = "LLM_ERROR"
+    http_status = 502  # Bad Gateway
+
+
+class LLMTimeoutError(LLMError):
+    """LLM request timed out."""
+    error_code = "LLM_TIMEOUT"
+    http_status = 504  # Gateway Timeout
+
+
+class LLMToolError(LLMError):
+    """LLM tool execution failed."""
+    error_code = "LLM_TOOL_ERROR"
+    http_status = 500

@@ -125,6 +125,33 @@ class InfoResponse(BaseModel):
     node: str = Field(..., description="Node this API is running on")
 
 
+class AnalyzeRequest(BaseModel):
+    """Request body for POST /analyze — natural language log analysis."""
+    query: str = Field(..., description="Natural language question about infrastructure")
+    service: Optional[str] = Field(None, description="Scope analysis to a specific service")
+    host: Optional[str] = Field(None, description="Scope analysis to a specific host")
+    start_time: Optional[datetime] = Field(None, description="Start of time window (UTC)")
+    end_time: Optional[datetime] = Field(None, description="End of time window (UTC)")
+
+
+class ToolCallRecord(BaseModel):
+    """Record of a single tool call made during LLM analysis."""
+    tool_name: str = Field(..., description="Name of the tool called")
+    arguments: Dict[str, Any] = Field(..., description="Arguments passed to the tool")
+    result_summary: str = Field(..., description="Truncated summary of tool result")
+
+
+class AnalyzeResponse(BaseModel):
+    """Response from POST /analyze — LLM-generated explanation with evidence."""
+    query: str = Field(..., description="Original query")
+    explanation: str = Field(..., description="LLM's synthesized answer")
+    confidence: Optional[str] = Field(None, description="high/medium/low confidence assessment")
+    tool_calls: list[ToolCallRecord] = Field(default_factory=list, description="Tools called during analysis")
+    sources: list[Dict[str, Any]] = Field(default_factory=list, description="Key log events/templates cited")
+    iterations: int = Field(..., description="Number of LLM reasoning iterations")
+    model: str = Field(..., description="LLM model used")
+
+
 class ErrorResponse(BaseModel):
     """Standardized error response format."""
     error_code: str = Field(..., description="Machine-readable error code")

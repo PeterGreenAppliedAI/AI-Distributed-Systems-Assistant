@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DevMesh Log Analyzer</title>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: #1a1a2e; color: #e0e0e0; min-height: 100vh;
+    display: flex; justify-content: center; padding: 2rem 1rem;
+  }
+  .container { max-width: 860px; width: 100%; }
+  h1 { font-size: 1.4rem; font-weight: 600; margin-bottom: 1.5rem; color: #eaf0fb; }
+  h1 span { color: #5b8dee; }
+
+  /* Cards */
+  .card {
+    background: #16213e; border: 1px solid #0f3460; border-radius: 8px;
+    padding: 1.25rem; margin-bottom: 1rem;
+  }
+
+  /* Form */
+  textarea {
+    width: 100%; background: #0f1a30; border: 1px solid #1a3a6a; border-radius: 6px;
+    color: #e0e0e0; padding: 0.75rem; font-size: 0.95rem; resize: vertical;
+    min-height: 60px; font-family: inherit;
+  }
+  textarea:focus { outline: none; border-color: #5b8dee; }
+  .filter-toggle {
+    background: none; border: none; color: #7a8baa; cursor: pointer;
+    font-size: 0.85rem; margin-top: 0.5rem; padding: 0.25rem 0;
+  }
+  .filter-toggle:hover { color: #a0b0cc; }
+  .filters { display: none; margin-top: 0.75rem; gap: 0.75rem; flex-wrap: wrap; }
+  .filters.open { display: flex; }
+  .filter-group { display: flex; flex-direction: column; gap: 0.25rem; flex: 1; min-width: 180px; }
+  .filter-group label { font-size: 0.8rem; color: #7a8baa; }
+  .filter-group select, .filter-group input {
+    background: #0f1a30; border: 1px solid #1a3a6a; border-radius: 4px;
+    color: #e0e0e0; padding: 0.4rem 0.5rem; font-size: 0.85rem;
+  }
+  .filter-group select:focus, .filter-group input:focus { outline: none; border-color: #5b8dee; }
+  input[type="datetime-local"]::-webkit-calendar-picker-indicator { filter: invert(0.7); }
+  .btn-row { display: flex; gap: 0.75rem; margin-top: 0.75rem; align-items: center; }
+  button.primary {
+    background: #5b8dee; color: #fff; border: none; border-radius: 6px;
+    padding: 0.55rem 1.5rem; font-size: 0.9rem; cursor: pointer; font-weight: 500;
+  }
+  button.primary:hover { background: #4a7de0; }
+  button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* Spinner */
+  .spinner-area { display: none; align-items: center; gap: 0.75rem; padding: 0.75rem 0; }
+  .spinner-area.active { display: flex; }
+  .spinner {
+    width: 18px; height: 18px; border: 2px solid #1a3a6a; border-top-color: #5b8dee;
+    border-radius: 50%; animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner-text { font-size: 0.85rem; color: #7a8baa; }
+
+  /* Result */
+  #result { display: none; }
+  #result.visible { display: block; }
+  .explanation { line-height: 1.6; }
+  .explanation h1, .explanation h2, .explanation h3 { color: #eaf0fb; margin: 1rem 0 0.5rem; }
+  .explanation h1 { font-size: 1.2rem; }
+  .explanation h2 { font-size: 1.1rem; }
+  .explanation h3 { font-size: 1rem; }
+  .explanation p { margin-bottom: 0.75rem; }
+  .explanation code {
+    background: #0f1a30; padding: 0.15rem 0.35rem; border-radius: 3px; font-size: 0.85em;
+  }
+  .explanation pre {
+    background: #0f1a30; padding: 0.75rem; border-radius: 6px; overflow-x: auto;
+    margin-bottom: 0.75rem;
+  }
+  .explanation pre code { padding: 0; background: none; }
+  .explanation table { border-collapse: collapse; width: 100%; margin-bottom: 0.75rem; }
+  .explanation th, .explanation td {
+    border: 1px solid #1a3a6a; padding: 0.4rem 0.6rem; text-align: left; font-size: 0.85rem;
+  }
+  .explanation th { background: #0f1a30; }
+  .explanation ul, .explanation ol { margin: 0 0 0.75rem 1.25rem; }
+  .meta { display: flex; gap: 1rem; margin-top: 1rem; font-size: 0.8rem; color: #7a8baa; flex-wrap: wrap; }
+  .meta-badge {
+    background: #0f1a30; border: 1px solid #1a3a6a; border-radius: 4px;
+    padding: 0.2rem 0.5rem;
+  }
+  details { margin-top: 1rem; }
+  summary {
+    cursor: pointer; font-size: 0.9rem; color: #7a8baa; user-select: none;
+    padding: 0.25rem 0;
+  }
+  summary:hover { color: #a0b0cc; }
+  .tool-call {
+    background: #0f1a30; border-radius: 4px; padding: 0.5rem 0.75rem;
+    margin: 0.4rem 0; font-family: 'Fira Code', 'Cascadia Code', monospace; font-size: 0.8rem;
+    border-left: 3px solid #1a3a6a; overflow-x: auto;
+  }
+  .tool-call .name { color: #5b8dee; }
+  .tool-call .args { color: #8899aa; }
+  .tool-call .result-summary { color: #6a7a8a; font-style: italic; margin-top: 0.25rem; }
+  .source-item {
+    background: #0f1a30; border-radius: 4px; padding: 0.5rem 0.75rem;
+    margin: 0.4rem 0; font-size: 0.8rem; border-left: 3px solid #1a3a6a;
+    overflow-x: auto; white-space: pre-wrap; word-break: break-all;
+  }
+
+  /* Error */
+  .error-msg {
+    background: #2e1a1a; border: 1px solid #6a2020; border-radius: 6px;
+    padding: 0.75rem; color: #f08080; font-size: 0.9rem; display: none;
+  }
+  .error-msg.visible { display: block; }
+
+  /* History sidebar */
+  .history { margin-top: 1.5rem; }
+  .history h3 { font-size: 0.85rem; color: #7a8baa; margin-bottom: 0.5rem; }
+  .history-item {
+    background: #0f1a30; border: 1px solid #1a3a6a; border-radius: 4px;
+    padding: 0.4rem 0.6rem; margin-bottom: 0.3rem; font-size: 0.8rem;
+    cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .history-item:hover { border-color: #5b8dee; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1><span>DevMesh</span> Log Analyzer</h1>
+
+  <div class="card">
+    <textarea id="query" placeholder="Ask a question about your logs..." rows="2"></textarea>
+    <button class="filter-toggle" onclick="toggleFilters()">&#9662; Filters</button>
+    <div class="filters" id="filters">
+      <div class="filter-group">
+        <label>Host</label>
+        <select id="host">
+          <option value="">All hosts</option>
+          <option>dev-services</option>
+          <option>gpu-node</option>
+          <option>gpu-node-3060</option>
+          <option>electrical-estimator</option>
+          <option>teaching</option>
+          <option>mariadb-vm</option>
+          <option>postgres-vm</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label>Service</label>
+        <input type="text" id="service" placeholder="e.g. nginx, sshd">
+      </div>
+      <div class="filter-group">
+        <label>Start time</label>
+        <input type="datetime-local" id="start_time">
+      </div>
+      <div class="filter-group">
+        <label>End time</label>
+        <input type="datetime-local" id="end_time">
+      </div>
+    </div>
+    <div class="btn-row">
+      <button class="primary" id="analyzeBtn" onclick="submitAnalysis()">Analyze</button>
+    </div>
+  </div>
+
+  <div class="spinner-area" id="spinner">
+    <div class="spinner"></div>
+    <span class="spinner-text">Analyzing &mdash; this may take up to a minute...</span>
+  </div>
+
+  <div class="error-msg" id="error"></div>
+
+  <div class="card" id="result">
+    <div class="explanation" id="explanation"></div>
+    <div class="meta" id="meta"></div>
+    <div id="toolCallsSection"></div>
+    <div id="sourcesSection"></div>
+  </div>
+
+  <div class="history" id="historySection">
+    <h3>Recent queries</h3>
+    <div id="historyList"></div>
+  </div>
+</div>
+
+<script>
+  const HISTORY_KEY = 'devmesh_query_history';
+  const MAX_HISTORY = 10;
+
+  function toggleFilters() {
+    document.getElementById('filters').classList.toggle('open');
+  }
+
+  function getHistory() {
+    try { return JSON.parse(localStorage.getItem(HISTORY_KEY)) || []; }
+    catch { return []; }
+  }
+
+  function saveToHistory(query) {
+    let h = getHistory().filter(q => q !== query);
+    h.unshift(query);
+    if (h.length > MAX_HISTORY) h = h.slice(0, MAX_HISTORY);
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(h));
+    renderHistory();
+  }
+
+  function renderHistory() {
+    const list = document.getElementById('historyList');
+    const h = getHistory();
+    if (!h.length) { list.innerHTML = '<div style="font-size:0.8rem;color:#4a5568;">No queries yet</div>'; return; }
+    list.innerHTML = h.map(q =>
+      `<div class="history-item" onclick="loadQuery(this)" title="${q.replace(/"/g, '&quot;')}">${q}</div>`
+    ).join('');
+  }
+
+  function loadQuery(el) {
+    document.getElementById('query').value = el.title;
+    document.getElementById('query').focus();
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  async function submitAnalysis() {
+    const query = document.getElementById('query').value.trim();
+    if (!query) return;
+
+    const host = document.getElementById('host').value;
+    const service = document.getElementById('service').value.trim();
+    const startTime = document.getElementById('start_time').value;
+    const endTime = document.getElementById('end_time').value;
+
+    const body = { query };
+    if (host) body.host = host;
+    if (service) body.service = service;
+    if (startTime) body.start_time = new Date(startTime).toISOString();
+    if (endTime) body.end_time = new Date(endTime).toISOString();
+
+    const btn = document.getElementById('analyzeBtn');
+    const spinner = document.getElementById('spinner');
+    const errorEl = document.getElementById('error');
+    const resultEl = document.getElementById('result');
+
+    btn.disabled = true;
+    spinner.classList.add('active');
+    errorEl.classList.remove('visible');
+    resultEl.classList.remove('visible');
+
+    try {
+      const resp = await fetch('/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+      if (!resp.ok) {
+        const errData = await resp.json().catch(() => null);
+        const msg = errData?.message || errData?.detail || `HTTP ${resp.status}`;
+        throw new Error(msg);
+      }
+
+      const data = await resp.json();
+      saveToHistory(query);
+      renderResult(data);
+    } catch (err) {
+      errorEl.textContent = `Error: ${err.message}`;
+      errorEl.classList.add('visible');
+    } finally {
+      btn.disabled = false;
+      spinner.classList.remove('active');
+    }
+  }
+
+  function renderResult(data) {
+    const resultEl = document.getElementById('result');
+
+    // Explanation (markdown)
+    document.getElementById('explanation').innerHTML = marked.parse(data.explanation || '');
+
+    // Meta badges
+    const meta = document.getElementById('meta');
+    const badges = [];
+    if (data.confidence) badges.push(`Confidence: <strong>${escapeHtml(data.confidence)}</strong>`);
+    if (data.iterations != null) badges.push(`Iterations: <strong>${data.iterations}</strong>`);
+    if (data.model) badges.push(`Model: <strong>${escapeHtml(data.model)}</strong>`);
+    meta.innerHTML = badges.map(b => `<span class="meta-badge">${b}</span>`).join('');
+
+    // Tool calls
+    const tcSection = document.getElementById('toolCallsSection');
+    if (data.tool_calls && data.tool_calls.length) {
+      tcSection.innerHTML = `<details>
+        <summary>Tool Calls (${data.tool_calls.length})</summary>
+        ${data.tool_calls.map(tc => `<div class="tool-call">
+          <span class="name">${escapeHtml(tc.tool_name)}</span>(<span class="args">${escapeHtml(JSON.stringify(tc.arguments))}</span>)
+          ${tc.result_summary ? `<div class="result-summary">${escapeHtml(tc.result_summary)}</div>` : ''}
+        </div>`).join('')}
+      </details>`;
+    } else {
+      tcSection.innerHTML = '';
+    }
+
+    // Sources
+    const srcSection = document.getElementById('sourcesSection');
+    if (data.sources && data.sources.length) {
+      srcSection.innerHTML = `<details>
+        <summary>Sources (${data.sources.length} cited events)</summary>
+        ${data.sources.map(s => `<div class="source-item">${escapeHtml(JSON.stringify(s, null, 2))}</div>`).join('')}
+      </details>`;
+    } else {
+      srcSection.innerHTML = '';
+    }
+
+    resultEl.classList.add('visible');
+  }
+
+  // Allow Ctrl+Enter to submit
+  document.getElementById('query').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      submitAnalysis();
+    }
+  });
+
+  // Init history
+  renderHistory();
+</script>
+</body>
+</html>

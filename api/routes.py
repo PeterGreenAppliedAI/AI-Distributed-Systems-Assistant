@@ -12,6 +12,8 @@ from typing import List, Optional
 from fastapi import APIRouter, Query, Request, status
 
 from models.schemas import (
+    AnalyzeRequest,
+    AnalyzeResponse,
     LogEventCreate,
     LogEventResponse,
     LogIngestRequest,
@@ -19,11 +21,13 @@ from models.schemas import (
     LogLevel,
     LogSearchResult,
     TemplateSearchResult,
+    ToolCallRecord,
 )
 from db.database import get_pool
 from services.embedding import embed_batch, embed_text
 from services.canonicalize import template_key
-from errors import EmptyBatchError, IngestionError, QueryError, DatabaseConnectionError
+from services.llm import analyze as llm_analyze
+from errors import EmptyBatchError, IngestionError, QueryError, DatabaseConnectionError, LLMError
 
 logger = logging.getLogger(__name__)
 
@@ -741,3 +745,54 @@ async def search_templates(
     except Exception as e:
         logger.error("Template search failed: %s", e)
         raise QueryError("Template search failed")
+
+
+@router.post(
+    "/analyze",
+    response_model=AnalyzeResponse,
+    tags=["Analysis"],
+)
+async def analyze_logs(request: Request, body: AnalyzeRequest):
+    """Analyze logs using LLM reasoning with tool calling.
+
+    The LLM uses available tools (search_templates, query_logs, get_template_stats,
+    get_service_overview, get_log_context) to gather evidence, then synthesizes
+    a structured answer with cited sources.
+    """
+    http_client = getattr(request.app.state, "http_client", None)
+    if http_client is None:
+        raise LLMError("HTTP client not available")
+
+    try:
+        pool = get_pool()
+    except Exception as e:
+        raise DatabaseConnectionError(f"Failed to get DB pool: {e}")
+
+    context = {}
+    if body.service:
+        context["service"] = body.service
+    if body.host:
+        context["host"] = body.host
+    if body.start_time:
+        context["start_time"] = body.start_time.isoformat()
+    if body.end_time:
+        context["end_time"] = body.end_time.isoformat()
+
+    result = await llm_analyze(http_client, pool, body.query, context)
+
+    return AnalyzeResponse(
+        query=result.query,
+        explanation=result.explanation,
+        confidence=result.confidence,
+        tool_calls=[
+            ToolCallRecord(
+                tool_name=tc.tool_name,
+                arguments=tc.arguments,
+                result_summary=tc.result_summary,
+            )
+            for tc in result.tool_calls
+        ],
+        sources=result.sources,
+        iterations=result.iterations,
+        model=result.model,
+    )
