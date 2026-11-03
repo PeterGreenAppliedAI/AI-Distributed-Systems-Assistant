@@ -6,8 +6,12 @@
 
 ## ⏸ PAUSED (2026-11-03)
 
-Platform intentionally paused while MariaDB (10.0.0.18) is down. Services and
-timers stopped so the shipper spool stops growing. To resume: restore the DB,
+Platform intentionally paused while MariaDB (10.0.0.18) is down. Done
+2026-11-03 with `systemctl disable --now`:
+- dev-services: devmesh-shipper, devmesh-api, devmesh-healthcheck.timer, devmesh-ttl-cleanup.timer
+- shippers on gpu-node, gpu-node-3060, mariadb-vm, electrical-estimator, postgres-vm
+- teaching (192.168.1.227): not reached; node is offline. Its shipper is still
+  enabled and will start spooling when the node comes back. Disable it then. To resume: restore the DB,
 then re-enable services, then drain the spool (see 2026-11-03 outage section).
 
 ## Future Ideas (not scheduled — after Phase 3/4)
