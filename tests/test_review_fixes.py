@@ -523,3 +523,73 @@ def test_healthcheck_staleness_uses_db_side_age():
     sev = {name: s for s, name, _ in out}
     assert sev["db:connect"] == "ok"
     assert sev["ingest:staleness"] == "crit"   # 2000s >= 1800s
+
+
+def test_healthcheck_importable_without_syslog():
+    """syslog is Unix-only; the checks must import on macOS/Windows too."""
+    import importlib
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    saved = {k: sys.modules.pop(k) for k in ("healthcheck", "syslog") if k in sys.modules}
+    sys.modules["syslog"] = None  # makes `import syslog` raise ImportError
+    try:
+        hc = importlib.import_module("healthcheck")
+        assert callable(hc.check_db_and_ingest)
+    finally:
+        sys.modules.pop("syslog", None)
+        sys.modules.pop("healthcheck", None)
+        sys.modules.update(saved)
+
+
+def test_recount_only_single_groupby_pass():
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    import reconsolidate_templates as rt
+
+    executed, committed = [], []
+
+    class Cur:
+        rowcount = 3
+        def execute(self, sql, params=None):
+            executed.append(sql)
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            pass
+
+    class Conn:
+        def cursor(self):
+            return Cur()
+        def commit(self):
+            committed.append(True)
+        def close(self):
+            pass
+
+    with patch.object(rt, "get_sync_connection", return_value=Conn()):
+        rt.recount_only()
+
+    assert executed == [rt.RECOUNT_SQL] and committed
+    sql = rt.RECOUNT_SQL
+    assert "GROUP BY template_id" in sql
+    assert "LEFT JOIN" in sql and "COALESCE(x.c, 0)" in sql   # zero-event templates reset to 0
+    assert "WHERE template_id = t.id" not in sql             # no correlated subquery
+    # recount never touches ids/hashes, which keeps it safe with the API running
+    assert "template_hash" not in sql and "SET t.id" not in sql
+
+
+def test_recount_only_skips_live_api_guard():
+    """--recount-only is cache-safe, so it must run even while the API is up."""
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    import reconsolidate_templates as rt
+    called = []
+    with patch.object(rt, "_api_is_running", return_value=True), \
+         patch.object(rt, "recount_only", side_effect=lambda: called.append(True)), \
+         patch.object(rt, "reconsolidate", side_effect=AssertionError("full run")):
+        assert rt.main(["--recount-only"]) == 0
+    assert called
+
+
+def test_full_reconsolidate_refuses_with_api_up():
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    import reconsolidate_templates as rt
+    with patch.object(rt, "_api_is_running", return_value=True), \
+         patch.object(rt, "reconsolidate", side_effect=AssertionError("must not run")):
+        assert rt.main([]) == 2

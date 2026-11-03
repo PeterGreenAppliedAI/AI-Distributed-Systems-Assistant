@@ -71,19 +71,30 @@ def _api_is_running() -> bool:
         return False
 
 
+RECOUNT_SQL = (
+    "UPDATE log_templates t "
+    "LEFT JOIN (SELECT template_id, COUNT(*) AS c FROM log_events "
+    "           WHERE template_id IS NOT NULL GROUP BY template_id) x "
+    "  ON x.template_id = t.id "
+    "SET t.event_count = COALESCE(x.c, 0)"
+)
+
+
 def recount_only() -> None:
     """Recompute log_templates.event_count from log_events.
 
     Safe with the API running: it never changes template ids or hashes, so the
     API's TemplateCache stays valid. Heals counter drift from concurrent
     ingests or failed counter updates without an outage window.
+
+    Under live ingest the result is a point-in-time snapshot. Increments that
+    land during the recount may or may not be included, so treat event_count
+    as approximate. One GROUP BY pass over log_events, not a correlated
+    subquery per template.
     """
     conn = get_sync_connection()
     with conn.cursor() as cur:
-        cur.execute(
-            "UPDATE log_templates t SET event_count = "
-            "(SELECT COUNT(*) FROM log_events WHERE template_id = t.id)"
-        )
+        cur.execute(RECOUNT_SQL)
         print(f"Recounted event_count on {cur.rowcount} templates")
     conn.commit()
     conn.close()
@@ -328,10 +339,7 @@ def reconsolidate(delay: float = 2.0, dry_run: bool = False, embed_batch_size: i
     # Phase 4: Fix event_count on all remaining templates
     print("\n--- Phase 4: Correcting event_counts ---")
     with conn.cursor() as cur:
-        cur.execute(
-            "UPDATE log_templates t SET event_count = "
-            "(SELECT COUNT(*) FROM log_events WHERE template_id = t.id)"
-        )
+        cur.execute(RECOUNT_SQL)
         fixed = cur.rowcount
     conn.commit()
     print(f"  Updated event_count on {fixed} templates")
@@ -351,7 +359,7 @@ def reconsolidate(delay: float = 2.0, dry_run: bool = False, embed_batch_size: i
     conn.close()
 
 
-if __name__ == "__main__":
+def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         description="Re-canonicalize and consolidate log_templates"
     )
@@ -365,11 +373,11 @@ if __name__ == "__main__":
                         help="Run even if the API is up (unsafe: stale template cache)")
     parser.add_argument("--embed-batch-size", type=int, default=20,
                         help="Embeddings per batch (default 20)")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.recount_only:
         recount_only()
-        sys.exit(0)
+        return 0
 
     print(f"Template reconsolidation (delay={args.delay}s, "
           f"dry_run={args.dry_run})")
@@ -379,5 +387,10 @@ if __name__ == "__main__":
               "so live ingest would link events to deleted templates.\n"
               "Stop it first (sudo systemctl stop devmesh-api), or pass "
               "--allow-live-api if you know it isn't ingesting.")
-        sys.exit(2)
+        return 2
     reconsolidate(args.delay, args.dry_run, args.embed_batch_size)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

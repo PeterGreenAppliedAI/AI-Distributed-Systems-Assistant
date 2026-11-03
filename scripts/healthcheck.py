@@ -14,7 +14,6 @@ import os
 import shutil
 import subprocess
 import sys
-import syslog
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -95,10 +94,11 @@ def check_failed_batches():
 
 SEV_RANK = {'ok': 0, 'warn': 1, 'crit': 2}
 SEV_EXIT = {'ok': 0, 'warn': 1, 'crit': 2}
-SEV_SYSLOG = {'ok': syslog.LOG_INFO, 'warn': syslog.LOG_WARNING, 'crit': syslog.LOG_ERR}
 
 
 def main():
+    import syslog  # Unix-only; imported here so the checks stay importable anywhere
+    SEV_SYSLOG = {'ok': syslog.LOG_INFO, 'warn': syslog.LOG_WARNING, 'crit': syslog.LOG_ERR}
     syslog.openlog('devmesh-health', syslog.LOG_PID, syslog.LOG_USER)
     results = []
     for fn in (check_disk, check_services, check_db_and_ingest, check_failed_batches):

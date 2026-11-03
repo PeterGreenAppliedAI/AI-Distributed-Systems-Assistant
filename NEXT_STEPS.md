@@ -173,9 +173,17 @@ Follow-up review (same day), fixed, 133 tests total:
 - [x] `reconsolidate_templates.py --recount-only`: heals event_count drift, safe with API up
 - [x] Tests for drain script, healthcheck staleness, HTTP search param order
 
+Third pass, 137 tests:
+- [x] `healthcheck.py` imports `syslog` lazily in `main()`, so the suite passes off Linux
+- [x] Recount uses one `GROUP BY` join instead of a per-template correlated subquery
+      (shared `RECOUNT_SQL`, also used by reconsolidate Phase 4)
+- [x] `reconsolidate_templates.py` has a testable `main(argv)`; tests cover recount SQL,
+      `--recount-only` bypassing the live-API guard, and the full run refusing while the API is up
+
 Known, accepted: template counters can drift. Two concurrent ingests of the same
 new log can both count it (the pre-check runs before INSERT IGNORE), and a failed
-lookup or update undercounts. Heal with `--recount-only`.
+lookup or update undercounts. Heal with `--recount-only`. Under live ingest that
+is a point-in-time snapshot. Treat `event_count` as approximate, never exact.
 
 Still open:
 - [ ] Re-measure events/templates/compression once DB is back; replace stale doc numbers
@@ -269,7 +277,7 @@ until MariaDB couldn't autoextend further.
 - [x] 5 LLM tools (`search_templates`, `query_logs`, `get_template_stats`, `get_service_overview`, `get_log_context`)
 - [x] LLM orchestration loop (`services/llm.py`) with Ollama `/api/chat` tool calling
 - [x] `POST /analyze` endpoint wired up in `api/routes.py`
-- [x] 26 new tests (code + tests landed in fea727c, 2026-11-03; 133 total after review fixes)
+- [x] 26 new tests (code + tests landed in fea727c, 2026-11-03; 137 total after review fixes)
 - [x] End-to-end validation with live Ollama + `nemotron-3-nano:30b`
 - [x] Frontend UI (`/ui` → `static/index.html`) — dark theme, filters, markdown rendering, query history
 - [x] Two-phase synthesis — separate tool-calling loop from analysis generation

@@ -84,7 +84,7 @@ A local-first platform that:
 | Canonical templates | 5,713 |
 | Compression ratio | **157x** (899K → 5.7K patterns) |
 | Embedding dimensions | 4,096 |
-| Test suite | 133 tests, all passing (DB access mocked) |
+| Test suite | 137 tests, all passing (DB access mocked) |
 | Codebase | 42 Python files, ~4,600 lines production (~7,600 incl. tests/scripts) |
 | External API costs | **$0** (all inference local) |
 
