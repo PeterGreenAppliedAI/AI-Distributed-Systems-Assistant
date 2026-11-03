@@ -1,6 +1,6 @@
 # DevMesh Platform - Next Steps
 
-**Last Updated**: February 2026
+**Last Updated**: 2026-05-06
 
 ---
 
@@ -99,6 +99,68 @@ SELECT COUNT(*) FROM log_templates;  -- 5,944 unique templates
 SELECT COUNT(*) FROM log_events;     -- 928K raw logs
 -- Result: 151x compression (exceeded 10-100x expectation)
 ```
+
+---
+
+## 2026-05-06 Incident & Platform Self-Monitoring
+
+**What happened**: MariaDB VM `/` filled to 100%, ingest failed silently for
+7 days. Root cause was a 49 GB HNSW vector index file
+(`log_templates#i#05.ibd`) — invisible to `information_schema.tables.index_length`
+because MariaDB vector indexes don't report there. Disk pressure was masked
+until MariaDB couldn't autoextend further.
+
+**Resolution**:
+- Resized VM disk 100 GB → 250 GB (`growpart` + `resize2fs`).
+- Rebuilt vector index: `ALTER ... DROP KEY` then `ADD VECTOR KEY`. With API
+  stopped, completes in **~45 seconds** for 23k rows × 4096-dim. With API
+  running, the rebuild is pathological (>2.6 hr, must kill) — see runbook
+  `scripts/rebuild_template_vector_index.md`.
+- TTL was never enforcing 90 days because the systemd timer was never
+  installed. Installed + ran — deleted 970,726 events older than 90 days.
+- Drained `shipper/failed_batches.jsonl` (488 MB / ~24k batches) back through
+  the API.
+
+### Platform Self-Monitoring — NEW
+- [x] `scripts/healthcheck.py` — disk, services, DB connect, ingest staleness,
+      shipper backlog. Outputs JSON status + syslog warnings.
+- [x] `infra/devmesh-healthcheck.{service,timer}` — runs every 5 minutes.
+- [ ] **Install on dev-services**:
+      ```bash
+      sudo cp /home/tadeu718/devmesh-platform/infra/devmesh-healthcheck.{service,timer} \
+              /etc/systemd/system/
+      sudo systemctl daemon-reload
+      sudo systemctl enable --now devmesh-healthcheck.timer
+      ```
+- [ ] **Install TTL timer** (was missing — never enforced retention):
+      ```bash
+      sudo cp /home/tadeu718/devmesh-platform/infra/devmesh-ttl-cleanup.{service,timer} \
+              /etc/systemd/system/
+      sudo systemctl daemon-reload
+      sudo systemctl enable --now devmesh-ttl-cleanup.timer
+      ```
+- [ ] Wire `/tmp/devmesh-health.json` (or syslog `devmesh-health` tag) to a
+      real notification channel (ntfy/discord/email). Currently alerts only
+      reach syslog and the platform's own ingest pipeline.
+- [ ] Add filesystem-level `.ibd` size diff to healthcheck so HNSW bloat
+      surfaces before it eats the disk. (Vector indexes don't show up in
+      `information_schema.tables.index_length`.)
+- [ ] Optional: `OPTIMIZE TABLE log_events` to reclaim ~13 GB of fragmented
+      space from the TTL purge. Cosmetic — InnoDB will reuse the holes
+      naturally as new events ingest. Schedule with API stopped if doing it.
+
+### Lessons Captured
+- HNSW vector index rebuilds (and any DDL on `log_templates`) require the API
+  to be stopped — UPDATE-heavy workload otherwise stalls the merge phase
+  indefinitely. See memory `hnsw_rebuild_needs_quiet_window`.
+- Vector index sizes don't surface through `information_schema`. Filesystem
+  inspection (`ls -lh /var/lib/mysql/<db>/`) is the only ground truth. See
+  memory `vector_index_invisible_to_standard_size_stats`.
+- TTL `delete_stale_templates` collides with concurrent ingest UPDATEs
+  (MariaDB error 1020). Patched to soft-fail and continue — log_events
+  cleanup is the bulk-bytes job and runs cleanly.
+- The shipper's local `failed_batches.jsonl` buffering worked exactly as
+  designed during the 7-day outage. No events were lost.
 
 ---
 
